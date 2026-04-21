@@ -9,6 +9,10 @@ class AppPaths:
     base_dir: Path
 
     @property
+    def doc_dir(self) -> Path:
+        return self.base_dir / "doc"
+
+    @property
     def docs_dir(self) -> Path:
         return self.base_dir / "docs"
 

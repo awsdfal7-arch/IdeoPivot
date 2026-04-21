@@ -1,20 +1,34 @@
-# AI 接口与提示词（DeepSeek）
+# AI 接口与提示词
 
 ## 接口约定
 
-优先按“OpenAI 兼容接口”设计参数，以便后续切换供应商：
+当前项目对接三类模型服务，均按“OpenAI 兼容接口”组织主要参数：
 
-- base_url：例如 `https://api.deepseek.com`
-- api_key：由用户输入或从环境变量读取，默认写入用户目录配置（Windows 为 `%APPDATA%/sj_generator`），不写入仓库目录
-- model：例如 `deepseek-chat`
+- DeepSeek
+- Kimi
+- 千问
+
+各服务的主要配置项包括：
+
+- `base_url`
+- `api_key`
+- `model`
+- `timeout_s`
+
+其中：
+
+- 配置文件默认写入用户目录（Windows 为 `%APPDATA%/sj_generator`），不写入仓库目录
+- 配置文件当前保存 `base_url / model / timeout_s` 等非密钥字段
+- `api_key` 当前从环境变量读取，并通过程序设置界面写入用户环境变量
+- DeepSeek 额外区分导题模型与解析模型，解析模型默认值为 `deepseek-reasoner`
 
 建议调用 chat completion 类接口，要求模型输出严格 JSON，便于程序解析入库。
 
 ## 资料解析任务（txt/docx -> 结构化题目）
 
-目标：从一段文本中抽取选择题，输出为 JSON 数组，每个元素代表一道题。
+目标：从资料文本中抽取选择题，输出为 JSON 数组，每个元素代表一道题。当前导题流程使用 DeepSeek / Kimi / 千问三模型并行抽取并比对一致性。
 
-### JSON 输出结构（建议）
+### JSON 输出结构（当前结构）
 
 每题字段：
 
@@ -38,6 +52,13 @@
 
 - 原始文本（从 txt/docx 提取的纯文本）
 
+### 一致性策略（当前实现）
+
+- 每题最多尝试 3 轮
+- 每轮由 DeepSeek / Kimi / 千问各抽取 1 次
+- 同一轮三者结果一致才记为有效导入结果
+- 连续 3 轮仍不一致则跳过该题
+
 ### 容错策略（建议）
 
 - 若题干与选项边界不清晰，尽量按“最可能结构”抽取
@@ -46,10 +67,12 @@
 
 ## 解析生成任务（补解析）
 
-输入：stem、options、answer
+输入：`stem`、`options`、`answer`
 
-输出：analysis（中文，简洁说明选项为什么对/错）
+输出：`analysis`（中文，简洁说明选项为什么对/错）
 
 要求：
 
-- 提示词与生成要求后续补充，当前仅预留接口
+- 当前解析生成支持选择 `DeepSeek / Kimi / 千问`
+- 可结合 `reference/resource/` 下的全部 md 作为参考资料
+- 可结合常见错题归因参考文件辅助生成

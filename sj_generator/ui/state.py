@@ -9,6 +9,7 @@ AI_CONCURRENCY_OPTIONS = (1, 2, 3, 4, 5)
 ANALYSIS_PROVIDER_OPTIONS = ("deepseek", "kimi", "qwen")
 DEFAULT_ANALYSIS_MODEL_NAME = "deepseek-reasoner"
 DEFAULT_REPO_PARENT_DIR_NAME = "思政题库"
+DEFAULT_LIBRARY_DB_FILE_NAME = "思政题库.db"
 
 
 def normalize_ai_concurrency(value: int | None) -> int:
@@ -38,6 +39,17 @@ def normalize_default_repo_parent_dir_text(value: str | None) -> str:
     return text or str(default_repo_parent_dir())
 
 
+def library_db_path_from_repo_parent_dir_text(value: str | None) -> Path:
+    return Path(normalize_default_repo_parent_dir_text(value)) / DEFAULT_LIBRARY_DB_FILE_NAME
+
+
+@dataclass
+class AiSourceFileItem:
+    path: str
+    version: str = ""
+    level_path: str = ""
+
+
 @dataclass
 class WizardState:
     project_dir: Optional[Path] = None
@@ -50,6 +62,7 @@ class WizardState:
     batch_source_files_text: str = ""
     ai_source_files: Optional[list[Path]] = None
     ai_source_files_text: str = ""
+    ai_source_file_items: list[AiSourceFileItem] = field(default_factory=list)
     ai_import_questions: Optional[list[Question]] = None
     ai_import_level_path: str = ""
     dedupe_hits: Optional[list[DedupeHit]] = None

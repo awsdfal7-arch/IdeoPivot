@@ -21,15 +21,73 @@ from sj_generator.io.dedupe import (
     DedupeHit,
     dedupe_between_questions_and_db,
 )
-from sj_generator.io.sqlite_repo import load_all_questions
+from sj_generator.io.sqlite_repo import DbQuestionRecord, load_all_questions
 from sj_generator.models import Question
-from sj_generator.ui.state import WizardState
+from sj_generator.ui.state import WizardState, library_db_path_from_repo_parent_dir_text
 from sj_generator.ui.constants import (
-    PAGE_AI_ANALYSIS_OPTION,
+    PAGE_AI_ANALYSIS,
     PAGE_DEDUPE_RESULT,
+    PAGE_IMPORT_SUCCESS,
 )
+from sj_generator.ui.pages.analysis_pages import _commit_draft_questions_to_db
 
-DEFAULT_LIBRARY_DB_PATH = Path(__file__).resolve().parents[3] / "converted_db" / "思政题库.db"
+
+def _format_db_question_options(record: DbQuestionRecord) -> str:
+    option_texts = [record.option_1, record.option_2, record.option_3, record.option_4]
+    if record.question_type == "可转多选":
+        lines = [
+            f"{marker}. {text.strip()}".rstrip()
+            for marker, text in zip(["①", "②", "③", "④"], option_texts)
+            if text.strip()
+        ]
+        for letter, digits in (
+            ("A", record.choice_1),
+            ("B", record.choice_2),
+            ("C", record.choice_3),
+            ("D", record.choice_4),
+        ):
+            digits = (digits or "").strip()
+            if not digits:
+                continue
+            lines.append(f"{letter}. {_digits_to_circled(digits)}")
+        return "\n".join(lines)
+    if record.question_type == "多选":
+        markers = ["①", "②", "③", "④"]
+    else:
+        markers = ["A", "B", "C", "D"]
+    return "\n".join(
+        f"{marker}. {text.strip()}".rstrip()
+        for marker, text in zip(markers, option_texts)
+        if text.strip()
+    )
+
+
+def _format_db_question_answer(record: DbQuestionRecord) -> str:
+    answer = (record.answer or "").strip()
+    if record.question_type == "可转多选" and any(
+        value.strip() for value in (record.choice_1, record.choice_2, record.choice_3, record.choice_4)
+    ):
+        return answer
+    if record.question_type != "多选" and record.question_type != "可转多选":
+        return answer
+    return _digits_to_circled(answer.replace(",", ""))
+
+
+def _digits_to_circled(text: str) -> str:
+    return "".join(
+        {
+            "1": "①",
+            "2": "②",
+            "3": "③",
+            "4": "④",
+            "5": "⑤",
+            "6": "⑥",
+            "7": "⑦",
+            "8": "⑧",
+            "9": "⑨",
+        }.get(ch, ch)
+        for ch in text
+    )
 
 class DedupeOptionPage(QWizardPage):
     def __init__(self, state: WizardState) -> None:
@@ -126,7 +184,7 @@ class DedupeResultPage(QWizardPage):
         if not left_questions:
             self._on_error("当前题库草稿为空，无法执行查重。")
             return
-        db_path = DEFAULT_LIBRARY_DB_PATH
+        db_path = self._library_db_path()
         if not db_path.exists():
             self._on_error(f"当前总库不存在：{db_path}")
             return
@@ -151,8 +209,15 @@ class DedupeResultPage(QWizardPage):
     def isComplete(self) -> bool:
         return self._done and (not self._running)
 
+    def validatePage(self) -> bool:
+        if not self._state.analysis_enabled:
+            return _commit_draft_questions_to_db(self, self._state)
+        return True
+
     def nextId(self) -> int:
-        return PAGE_AI_ANALYSIS_OPTION
+        if self._state.analysis_enabled:
+            return PAGE_AI_ANALYSIS
+        return PAGE_IMPORT_SUCCESS
 
     def _render_hits(self, hits: list[DedupeHit]) -> None:
         self._table.setRowCount(len(hits))
@@ -200,7 +265,7 @@ class DedupeResultPage(QWizardPage):
             return self._state.repo_path
         if self._state.project_dir is not None:
             return self._state.project_dir / "当前草稿.xlsx"
-        return DEFAULT_LIBRARY_DB_PATH.parent / "当前草稿.xlsx"
+        return self._library_db_path().parent / "当前草稿.xlsx"
 
     def _load_questions_cached(self, path: Path) -> list[Question]:
         p = path.resolve()
@@ -209,22 +274,20 @@ class DedupeResultPage(QWizardPage):
         if p == self._current_left_source_path.resolve():
             qs = list(self._state.draft_questions)
         else:
-            if p == DEFAULT_LIBRARY_DB_PATH.resolve():
+            if p == self._library_db_path().resolve():
                 records = load_all_questions(p)
                 qs = [
                     Question(
                         number=record.id,
                         stem=record.stem,
-                        options="\n".join(
-                            f"{idx}. {text}"
-                            for idx, text in enumerate(
-                                [record.option_1, record.option_2, record.option_3, record.option_4],
-                                start=1,
-                            )
-                            if text.strip()
-                        ),
-                        answer=record.answer,
+                        options=_format_db_question_options(record),
+                        answer=_format_db_question_answer(record),
                         analysis=record.analysis,
+                        question_type=record.question_type,
+                        choice_1=record.choice_1,
+                        choice_2=record.choice_2,
+                        choice_3=record.choice_3,
+                        choice_4=record.choice_4,
                     )
                     for record in records
                 ]
@@ -234,6 +297,9 @@ class DedupeResultPage(QWizardPage):
                 qs = load_questions(p)
         self._questions_cache[p] = qs
         return qs
+
+    def _library_db_path(self) -> Path:
+        return library_db_path_from_repo_parent_dir_text(self._state.default_repo_parent_dir_text)
 
 
 class _DedupeWorker(QObject):

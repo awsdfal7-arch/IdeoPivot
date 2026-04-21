@@ -131,7 +131,7 @@ class ProgramSettingsDialog(QDialog):
         super().__init__(parent)
         self._state = state
         self.setWindowTitle("程序设定")
-        self.resize(460, 220)
+        self.resize(460, 260)
         self._analysis_test_thread: QThread | None = None
         self._analysis_test_worker: _AnalysisTargetTestWorker | None = None
         self._analysis_testing = False
@@ -161,6 +161,16 @@ class ProgramSettingsDialog(QDialog):
         self._auto_close_checkbox = QCheckBox("处理完成后自动关闭程序")
         self._auto_close_checkbox.setChecked(bool(self._state.auto_close_after_finish))
 
+        self._dedupe_checkbox = QCheckBox("导入流程默认执行库内查重")
+        self._dedupe_checkbox.setChecked(bool(self._state.dedupe_enabled))
+
+        self._import_analysis_combo = QComboBox()
+        self._import_analysis_combo.addItem("自动生成", True)
+        self._import_analysis_combo.addItem("不生成", False)
+        analysis_idx = self._import_analysis_combo.findData(bool(self._state.analysis_enabled))
+        if analysis_idx >= 0:
+            self._import_analysis_combo.setCurrentIndex(analysis_idx)
+
         self._default_repo_parent_dir_edit = QLineEdit()
         self._default_repo_parent_dir_edit.setText(
             normalize_default_repo_parent_dir_text(self._state.default_repo_parent_dir_text)
@@ -180,8 +190,10 @@ class ProgramSettingsDialog(QDialog):
         form = QFormLayout()
         form.addRow("统一并发数：", self._concurrency_combo)
         form.addRow("默认题库保存位置：", default_repo_row)
+        form.addRow("导入文档时解析生成：", self._import_analysis_combo)
         form.addRow("解析生成模型：", analysis_row)
         form.addRow("", self._analysis_status)
+        form.addRow("", self._dedupe_checkbox)
         form.addRow("", self._auto_close_checkbox)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -210,8 +222,12 @@ class ProgramSettingsDialog(QDialog):
         self._state.default_repo_parent_dir_text = normalize_default_repo_parent_dir_text(
             self._default_repo_parent_dir_edit.text()
         )
+        self._state.analysis_enabled = bool(self._import_analysis_combo.currentData())
         self._state.analysis_provider = provider
         self._state.analysis_model_name = model_name
+        self._state.dedupe_enabled = self._dedupe_checkbox.isChecked()
+        if not self._state.dedupe_enabled:
+            self._state.dedupe_hits = None
         self._state.auto_close_after_finish = self._auto_close_checkbox.isChecked()
         self.accept()
 
@@ -262,6 +278,8 @@ class ProgramSettingsDialog(QDialog):
         self._concurrency_combo.setEnabled(not testing)
         self._default_repo_parent_dir_edit.setEnabled(not testing)
         self._default_repo_parent_dir_browse_btn.setEnabled(not testing)
+        self._import_analysis_combo.setEnabled(not testing)
+        self._dedupe_checkbox.setEnabled(not testing)
         self._auto_close_checkbox.setEnabled(not testing)
         ok_button = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
         if ok_button is not None:

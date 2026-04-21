@@ -56,7 +56,7 @@ class BatchProcessPage(QWizardPage):
 
         self._files_edit = QLineEdit()
         self._files_edit.setReadOnly(True)
-        self._files_edit.setPlaceholderText("选择需要 AI 批处理的 txt/docx 资料文件")
+        self._files_edit.setPlaceholderText("选择需要 AI 批处理的 docx 资料文件")
 
         browse_btn = QPushButton("选择文件…")
         browse_btn.clicked.connect(self._browse)
@@ -130,7 +130,7 @@ class BatchProcessPage(QWizardPage):
             return False
         paths = self._selected_paths()
         if not paths:
-            QMessageBox.warning(self, "未选择文件", "请选择至少一个 txt 或 docx 文件。")
+            QMessageBox.warning(self, "未选择文件", "请选择至少一个 docx 文件。")
             return False
         deepseek = load_deepseek_config()
         kimi = load_kimi_config()
@@ -145,10 +145,10 @@ class BatchProcessPage(QWizardPage):
 
     def _selected_paths(self) -> list[Path]:
         paths = [Path(p.strip()) for p in self._files_edit.text().split(";") if p.strip()]
-        return [p for p in paths if p.exists() and p.suffix.lower() in (".txt", ".docx")]
+        return [p for p in paths if p.exists() and p.suffix.lower() == ".docx"]
 
     def _browse(self) -> None:
-        files, _ = QFileDialog.getOpenFileNames(self, "选择资料文件", "", "Word (*.docx);;Text (*.txt)")
+        files, _ = QFileDialog.getOpenFileNames(self, "选择资料文件", "", "Word (*.docx)")
         if files:
             self._files_edit.setText(_merge_paths_text(self._files_edit.text(), [Path(p) for p in files]))
 

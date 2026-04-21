@@ -5,6 +5,7 @@ from datetime import date
 from datetime import datetime
 from pathlib import Path
 import re
+import shutil
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMenuBar,
     QMessageBox,
     QTextEdit,
@@ -31,18 +33,35 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from sj_generator.config import load_welcome_table_column_visibility, save_welcome_table_column_visibility
+from sj_generator.config import (
+    load_welcome_table_column_visibility,
+    load_welcome_tree_expanded_prefixes,
+    save_welcome_table_column_visibility,
+    save_welcome_tree_expanded_prefixes,
+)
 from sj_generator.io.export_md import export_questions_to_markdown
-from sj_generator.io.excel_repo import load_questions
-from sj_generator.io.sqlite_repo import DbQuestionRecord, list_level_paths, load_questions_by_level_path, update_question
+from sj_generator.io.excel_repo import load_db_question_records, save_db_question_records
+from sj_generator.io.sqlite_repo import (
+    append_questions,
+    DbQuestionRecord,
+    count_questions_by_level_prefix,
+    delete_questions_by_level_prefix,
+    list_level_paths,
+    load_all_questions,
+    load_questions_by_level_path,
+    update_question,
+)
 from sj_generator.models import Question
+from sj_generator.paths import app_paths
 from sj_generator.ui.constants import PAGE_AI_SELECT
 from sj_generator.ui.api_config_dialog import ApiConfigDialog
 from sj_generator.ui.program_settings_dialog import ProgramSettingsDialog
-from sj_generator.ui.state import WizardState
+from sj_generator.ui.state import AiSourceFileItem, WizardState, library_db_path_from_repo_parent_dir_text
 
-DEFAULT_LIBRARY_DB_PATH = Path(__file__).resolve().parents[3] / "converted_db" / "思政题库.db"
 LAST_COLUMN_MIN_WIDTH = 140
+TREE_ROLE_LEVEL_PATH = Qt.ItemDataRole.UserRole
+TREE_ROLE_LEVEL_PREFIX = int(Qt.ItemDataRole.UserRole) + 1
+TREE_ROLE_LEVEL_DEPTH = int(Qt.ItemDataRole.UserRole) + 2
 TABLE_COLUMNS = [
     ("stem", "题目", True),
     ("options", "选项", True),
@@ -50,6 +69,10 @@ TABLE_COLUMNS = [
     ("analysis", "解析", True),
     ("id", "题目id", False),
     ("question_type", "类型", False),
+    ("choice_1", "组合A", False),
+    ("choice_2", "组合B", False),
+    ("choice_3", "组合C", False),
+    ("choice_4", "组合D", False),
     ("textbook_version", "教材版本", False),
     ("source_filename", "来源文件名", False),
     ("level_path", "所属层级", False),
@@ -65,17 +88,17 @@ class WelcomePage(QWizardPage):
     def __init__(self, state: WizardState) -> None:
         super().__init__()
         self._state = state
-        self._db_path = DEFAULT_LIBRARY_DB_PATH
+        self._db_path = self._current_db_path()
         self._current_db_records: list[DbQuestionRecord] = []
         self._row_resize_pending = False
         self._row_resize_followup_pending = False
         self._column_defs = TABLE_COLUMNS
         self._column_visibility = self._load_column_visibility()
+        loaded_expanded_prefixes = load_welcome_tree_expanded_prefixes()
+        self._expanded_level_prefixes = set(loaded_expanded_prefixes or [])
+        self._has_saved_tree_state = loaded_expanded_prefixes is not None
+        self._syncing_tree_expand_state = False
         self.setTitle("开始")
-
-        title_label = QLabel("欢迎使用思政智题云枢")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        title_label.setStyleSheet("font-size: 22px; font-weight: 600;")
 
         menu_bar = QMenuBar(self)
         import_menu = menu_bar.addMenu("导入")
@@ -86,6 +109,10 @@ class WelcomePage(QWizardPage):
         export_menu = menu_bar.addMenu("导出")
         self._export_md_action = export_menu.addAction("导出当前层级为 Markdown")
         self._export_md_action.triggered.connect(self._export_current_level_to_markdown)
+        self._export_current_level_xlsx_action = export_menu.addAction("导出当前层级为 xlsx")
+        self._export_current_level_xlsx_action.triggered.connect(self._export_current_level_to_xlsx)
+        self._export_db_table_xlsx_action = export_menu.addAction("导出整体数据库表为 xlsx")
+        self._export_db_table_xlsx_action.triggered.connect(self._export_db_table_to_xlsx)
         view_menu = menu_bar.addMenu("视图")
         column_menu = view_menu.addMenu("表格列显示")
         settings_menu = menu_bar.addMenu("设置")
@@ -97,7 +124,11 @@ class WelcomePage(QWizardPage):
         self._folder_tree = QTreeWidget()
         self._folder_tree.setHeaderHidden(True)
         self._folder_tree.setAlternatingRowColors(True)
+        self._folder_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._folder_tree.currentItemChanged.connect(self._on_level_selection_changed)
+        self._folder_tree.customContextMenuRequested.connect(self._show_folder_tree_context_menu)
+        self._folder_tree.itemExpanded.connect(self._on_tree_item_expanded)
+        self._folder_tree.itemCollapsed.connect(self._on_tree_item_collapsed)
 
         left_layout = QVBoxLayout()
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -148,11 +179,11 @@ class WelcomePage(QWizardPage):
 
         layout = QVBoxLayout()
         layout.setMenuBar(menu_bar)
-        layout.addWidget(title_label)
         layout.addWidget(self._content_splitter, 1)
         self.setLayout(layout)
 
     def initializePage(self) -> None:
+        self._db_path = self._current_db_path()
         self._refresh_level_tree()
         if self._folder_tree.currentItem() is None:
             self._populate_questions_table(self._state.draft_questions)
@@ -163,11 +194,49 @@ class WelcomePage(QWizardPage):
 
     def _enter_main_flow(self) -> None:
         self._state.start_mode = "wizard"
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择资料文件", "", "Word (*.docx);;All Files (*)"
+        )
+        if not files:
+            return
+        selected_paths = [Path(p) for p in files]
+        try:
+            self._backup_import_source_files(selected_paths)
+        except Exception as e:
+            QMessageBox.critical(self, "备份失败", f"复制资料到 doc 目录失败：{e}")
+            return
+        self._state.ai_source_files = selected_paths
+        self._state.ai_source_files_text = "; ".join(str(p) for p in selected_paths)
+        self._state.ai_source_file_items = [AiSourceFileItem(path=str(p)) for p in selected_paths]
         from sj_generator.ui.import_flow_wizard import ImportFlowWizard
 
         dlg = ImportFlowWizard(self._state, self)
         if dlg.exec():
             self._refresh_level_tree(preferred_level_path=self._state.ai_import_level_path)
+
+    def _backup_import_source_files(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        target_dir = app_paths(Path(__file__).resolve().parents[3]).doc_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for src in paths:
+            if not src.exists() or not src.is_file():
+                raise FileNotFoundError(src)
+            target_path = self._next_doc_backup_path(target_dir, src.name)
+            shutil.copy2(src, target_path)
+
+    def _next_doc_backup_path(self, target_dir: Path, file_name: str) -> Path:
+        candidate = target_dir / file_name
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        index = 2
+        while True:
+            numbered = target_dir / f"{stem}_{index}{suffix}"
+            if not numbered.exists():
+                return numbered
+            index += 1
 
     def _open_api_cfg(self) -> None:
         dlg = ApiConfigDialog(self)
@@ -176,6 +245,7 @@ class WelcomePage(QWizardPage):
     def _open_program_settings(self) -> None:
         dlg = ProgramSettingsDialog(self._state, self)
         if dlg.exec():
+            self._db_path = self._current_db_path()
             self._refresh_level_tree()
 
     def _import_from_table_file(self) -> None:
@@ -184,14 +254,21 @@ class WelcomePage(QWizardPage):
             return
         path = Path(file_path)
         try:
-            questions = load_questions(path)
+            records = load_db_question_records(path)
         except Exception as e:
             QMessageBox.critical(self, "导入失败", f"读取表格文件失败：{e}")
             return
-
-        self._state.draft_questions = list(questions)
-        self._populate_questions_table(questions)
-        QMessageBox.information(self, "导入完成", f"已从表格文件导入 {len(questions)} 道题。")
+        if not records:
+            QMessageBox.warning(self, "无法导入", "当前 xlsx 中没有可写入数据库的记录。")
+            return
+        try:
+            append_questions(self._db_path, records)
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", f"写入数据库失败：{e}")
+            return
+        preferred_level_path = next((record.level_path for record in records if record.level_path.strip()), "")
+        self._refresh_level_tree(preferred_level_path=preferred_level_path)
+        QMessageBox.information(self, "导入完成", f"已从数据库字段表 xlsx 导入 {len(records)} 道题。")
 
     def _export_current_level_to_markdown(self) -> None:
         if not self._current_db_records:
@@ -203,7 +280,7 @@ class WelcomePage(QWizardPage):
             QMessageBox.warning(self, "无法导出", "请先选择要导出的层级。")
             return
 
-        level_path = str(current.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        level_path = str(current.data(0, TREE_ROLE_LEVEL_PATH) or "").strip()
         if not level_path:
             QMessageBox.warning(self, "无法导出", "当前层级无效，无法导出。")
             return
@@ -231,14 +308,70 @@ class WelcomePage(QWizardPage):
         self._state.last_export_dir = md_path.parent
         QMessageBox.information(self, "导出完成", f"已导出 Markdown：\n{md_path}")
 
+    def _export_current_level_to_xlsx(self) -> None:
+        if not self._current_db_records:
+            QMessageBox.warning(self, "无法导出", "当前层级没有可导出的题目。")
+            return
+        current = self._folder_tree.currentItem()
+        if current is None:
+            QMessageBox.warning(self, "无法导出", "请先选择要导出的层级。")
+            return
+        level_path = str(current.data(0, TREE_ROLE_LEVEL_PATH) or "").strip()
+        if not level_path:
+            QMessageBox.warning(self, "无法导出", "当前层级无效，无法导出。")
+            return
+        safe_level_name = self._sanitize_export_name(level_path)
+        suggested = str(self._default_export_dir() / f"{safe_level_name}.xlsx")
+        file_path, _ = QFileDialog.getSaveFileName(self, "导出当前层级 xlsx", suggested, "Excel (*.xlsx)")
+        if not file_path:
+            return
+        target_path = Path(file_path)
+        try:
+            save_db_question_records(target_path, list(self._current_db_records))
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"写入 xlsx 失败：{e}")
+            return
+        self._state.last_export_dir = target_path.parent
+        QMessageBox.information(self, "导出完成", f"已导出当前层级 xlsx：\n{target_path}")
+
+    def _export_db_table_to_xlsx(self) -> None:
+        if not self._db_path.exists():
+            QMessageBox.warning(self, "无法导出", "当前数据库文件不存在。")
+            return
+        records = load_all_questions(self._db_path)
+        if not records:
+            QMessageBox.warning(self, "无法导出", "当前数据库表没有可导出的题目。")
+            return
+        suggested_name = f"{self._sanitize_export_name(self._db_path.stem)}_整体数据库表.xlsx"
+        suggested = str(self._default_export_dir() / suggested_name)
+        file_path, _ = QFileDialog.getSaveFileName(self, "导出整体数据库表 xlsx", suggested, "Excel (*.xlsx)")
+        if not file_path:
+            return
+        target_path = Path(file_path)
+        try:
+            save_db_question_records(target_path, records)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"写入 xlsx 失败：{e}")
+            return
+        self._state.last_export_dir = target_path.parent
+        QMessageBox.information(self, "导出完成", f"已导出整体数据库表 xlsx：\n{target_path}")
+
     def _refresh_level_tree(self, preferred_level_path: str | None = None) -> None:
+        current_item = self._folder_tree.currentItem()
+        current_prefix = ""
+        if current_item is not None:
+            current_prefix = str(current_item.data(0, TREE_ROLE_LEVEL_PREFIX) or "").strip()
+        if self._folder_tree.topLevelItemCount() > 0:
+            self._expanded_level_prefixes = self._collect_expanded_level_prefixes()
         self._folder_tree.clear()
         if not self._db_path.exists():
             return
 
+        self._syncing_tree_expand_state = True
         item_map: dict[tuple[str, ...], QTreeWidgetItem] = {}
         first_selectable_item: QTreeWidgetItem | None = None
         preferred_item: QTreeWidgetItem | None = None
+        selected_prefix_item: QTreeWidgetItem | None = None
         preferred_level_path = (preferred_level_path or "").strip()
         for level_path in list_level_paths(self._db_path):
             parts = self._parse_level_parts(level_path)
@@ -248,38 +381,51 @@ class WelcomePage(QWizardPage):
             path_parts: list[str] = []
             for idx, part in enumerate(parts):
                 path_parts.append(part)
+                prefix_path = ".".join(path_parts)
                 key = tuple(path_parts)
                 item = item_map.get(key)
                 if item is None:
                     item = QTreeWidgetItem([self._format_level_label(idx, part)])
-                    item.setToolTip(0, ".".join(path_parts))
+                    item.setToolTip(0, prefix_path)
+                    item.setData(0, TREE_ROLE_LEVEL_PREFIX, prefix_path)
+                    item.setData(0, TREE_ROLE_LEVEL_DEPTH, idx)
                     if parent_item is None:
                         self._folder_tree.addTopLevelItem(item)
                     else:
                         parent_item.addChild(item)
                     item_map[key] = item
+                if prefix_path in self._expanded_level_prefixes:
+                    item.setExpanded(True)
+                if current_prefix and prefix_path == current_prefix:
+                    selected_prefix_item = item
                 if idx == len(parts) - 1:
-                    item.setData(0, Qt.ItemDataRole.UserRole, level_path)
+                    item.setData(0, TREE_ROLE_LEVEL_PATH, level_path)
                     if first_selectable_item is None:
                         first_selectable_item = item
                     if preferred_level_path and level_path == preferred_level_path:
                         preferred_item = item
                 parent_item = item
 
-        selected_item = preferred_item or first_selectable_item
+        self._syncing_tree_expand_state = False
+        selected_item = preferred_item or selected_prefix_item
         if selected_item is not None:
             self._folder_tree.setCurrentItem(selected_item)
-            self._expand_item_ancestors(selected_item)
+            if preferred_item is not None:
+                self._expand_item_ancestors(selected_item)
+        elif (not self._has_saved_tree_state) and first_selectable_item is not None:
+            self._folder_tree.setCurrentItem(first_selectable_item)
+            self._expand_item_ancestors(first_selectable_item)
         else:
             self._table.setRowCount(0)
             self._schedule_table_row_resize()
+        self._sync_expanded_level_prefixes_from_tree()
 
     def _on_level_selection_changed(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
         if current is None:
             self._current_db_records = []
             self._table.setRowCount(0)
             return
-        level_path = current.data(0, Qt.ItemDataRole.UserRole)
+        level_path = current.data(0, TREE_ROLE_LEVEL_PATH)
         if not level_path:
             self._current_db_records = []
             self._table.setRowCount(0)
@@ -287,6 +433,79 @@ class WelcomePage(QWizardPage):
         records = load_questions_by_level_path(self._db_path, str(level_path))
         self._current_db_records = records
         self._populate_db_records_table(records)
+
+    def _show_folder_tree_context_menu(self, pos) -> None:
+        item = self._folder_tree.itemAt(pos)
+        if item is None:
+            return
+        level_prefix = str(item.data(0, TREE_ROLE_LEVEL_PREFIX) or "").strip()
+        if not level_prefix:
+            return
+        depth = int(item.data(0, TREE_ROLE_LEVEL_DEPTH) or 0)
+        self._folder_tree.setCurrentItem(item)
+        menu = QMenu(self)
+        delete_action = menu.addAction(self._delete_action_text(depth))
+        chosen = menu.exec(self._folder_tree.viewport().mapToGlobal(pos))
+        if chosen == delete_action:
+            self._delete_level_subtree(
+                level_prefix=level_prefix,
+                depth=depth,
+                display_label=item.text(0).strip() or level_prefix,
+            )
+
+    def _on_tree_item_expanded(self, _item: QTreeWidgetItem) -> None:
+        if self._syncing_tree_expand_state:
+            return
+        self._sync_expanded_level_prefixes_from_tree()
+
+    def _on_tree_item_collapsed(self, _item: QTreeWidgetItem) -> None:
+        if self._syncing_tree_expand_state:
+            return
+        self._sync_expanded_level_prefixes_from_tree()
+
+    def _delete_level_subtree(self, *, level_prefix: str, depth: int, display_label: str) -> None:
+        level_prefix = (level_prefix or "").strip()
+        if not level_prefix:
+            return
+        total = count_questions_by_level_prefix(self._db_path, level_prefix)
+        if total <= 0:
+            QMessageBox.information(self, "无需删除", "当前节点下没有可删除的题目。")
+            self._refresh_level_tree()
+            return
+        scope_text = self._delete_scope_text(depth)
+        answer = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除{scope_text}{display_label}（层级 {level_prefix}）下的 {total} 道题吗？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        deleted_count = delete_questions_by_level_prefix(self._db_path, level_prefix)
+        self._current_db_records = []
+        self._table.setRowCount(0)
+        self._schedule_table_row_resize()
+        self._refresh_level_tree()
+        QMessageBox.information(self, "删除完成", f"已删除{scope_text}{display_label}下的 {deleted_count} 道题。")
+
+    def _delete_action_text(self, depth: int) -> str:
+        if depth == 0:
+            return "删除整本书"
+        if depth == 1:
+            return "删除这一课"
+        if depth == 2:
+            return "删除这一框"
+        return "删除当前层级"
+
+    def _delete_scope_text(self, depth: int) -> str:
+        if depth == 0:
+            return "整本书 "
+        if depth == 1:
+            return "这一课 "
+        if depth == 2:
+            return "这一框 "
+        return "当前层级 "
 
     def _parse_level_parts(self, level_path: str) -> list[str]:
         return [part.strip() for part in str(level_path).split(".") if part.strip()]
@@ -307,6 +526,25 @@ class WelcomePage(QWizardPage):
         while current is not None:
             current.setExpanded(True)
             current = current.parent()
+
+    def _collect_expanded_level_prefixes(self) -> set[str]:
+        expanded: set[str] = set()
+
+        def visit(item: QTreeWidgetItem) -> None:
+            prefix = str(item.data(0, TREE_ROLE_LEVEL_PREFIX) or "").strip()
+            if prefix and item.isExpanded():
+                expanded.add(prefix)
+            for index in range(item.childCount()):
+                visit(item.child(index))
+
+        for index in range(self._folder_tree.topLevelItemCount()):
+            visit(self._folder_tree.topLevelItem(index))
+        return expanded
+
+    def _sync_expanded_level_prefixes_from_tree(self) -> None:
+        self._expanded_level_prefixes = self._collect_expanded_level_prefixes()
+        self._has_saved_tree_state = True
+        save_welcome_tree_expanded_prefixes(sorted(self._expanded_level_prefixes))
 
     def _to_chinese_number(self, value: int) -> str:
         digits = {
@@ -353,7 +591,11 @@ class WelcomePage(QWizardPage):
             "answer": question.answer,
             "analysis": question.analysis,
             "id": "",
-            "question_type": "",
+            "question_type": question.question_type,
+            "choice_1": question.choice_1,
+            "choice_2": question.choice_2,
+            "choice_3": question.choice_3,
+            "choice_4": question.choice_4,
             "textbook_version": "",
             "source_filename": "",
             "level_path": "",
@@ -372,6 +614,10 @@ class WelcomePage(QWizardPage):
             "analysis": record.analysis,
             "id": record.id,
             "question_type": record.question_type,
+            "choice_1": record.choice_1,
+            "choice_2": record.choice_2,
+            "choice_3": record.choice_3,
+            "choice_4": record.choice_4,
             "textbook_version": record.textbook_version,
             "source_filename": record.source_filename,
             "level_path": record.level_path,
@@ -389,6 +635,11 @@ class WelcomePage(QWizardPage):
             options=self._format_db_options(record),
             answer=self._format_db_answer(record),
             analysis=record.analysis,
+            question_type=record.question_type,
+            choice_1=record.choice_1,
+            choice_2=record.choice_2,
+            choice_3=record.choice_3,
+            choice_4=record.choice_4,
         )
 
     def _populate_row_by_values(self, row: int, values: dict[str, str]) -> None:
@@ -398,7 +649,27 @@ class WelcomePage(QWizardPage):
 
     def _format_db_options(self, record: DbQuestionRecord) -> str:
         options = [record.option_1, record.option_2, record.option_3, record.option_4]
-        if record.question_type in ("多选", "可转多选"):
+        if record.question_type == "可转多选":
+            lines = [
+                f"{marker}. {text.strip()}".rstrip()
+                for marker, text in zip(["①", "②", "③", "④"], options)
+                if text.strip()
+            ]
+            choice_lines = [
+                self._format_choice_mapping(letter, value)
+                for letter, value in (
+                    ("A", record.choice_1),
+                    ("B", record.choice_2),
+                    ("C", record.choice_3),
+                    ("D", record.choice_4),
+                )
+                if value.strip()
+            ]
+            if choice_lines and lines:
+                lines.append("")
+            lines.extend(choice_lines)
+            return "\n".join(lines)
+        if record.question_type == "多选":
             markers = ["①", "②", "③", "④"]
         else:
             markers = ["A", "B", "C", "D"]
@@ -411,7 +682,10 @@ class WelcomePage(QWizardPage):
 
     def _format_db_answer(self, record: DbQuestionRecord) -> str:
         answer = (record.answer or "").strip()
-        if record.question_type not in ("多选", "可转多选"):
+        if record.question_type == "可转多选":
+            if any(value.strip() for value in (record.choice_1, record.choice_2, record.choice_3, record.choice_4)):
+                return answer
+        if record.question_type != "多选" and record.question_type != "可转多选":
             return answer
         marker_map = {
             "1": "①",
@@ -430,6 +704,26 @@ class WelcomePage(QWizardPage):
             return answer
         return "".join(marker_map.get(token, token) for token in tokens)
 
+    def _format_choice_mapping(self, letter: str, value: str) -> str:
+        circled = "".join(self._digit_to_circled(ch) for ch in (value or "").strip() if ch.isdigit())
+        if circled:
+            return f"{letter}. {circled}"
+        return f"{letter}. {(value or '').strip()}".rstrip()
+
+    def _digit_to_circled(self, digit: str) -> str:
+        return {
+            "1": "①",
+            "2": "②",
+            "3": "③",
+            "4": "④",
+            "5": "⑤",
+            "6": "⑥",
+            "7": "⑦",
+            "8": "⑧",
+            "9": "⑨",
+            "0": "⑩",
+        }.get(digit, digit)
+
     def _format_stem_with_sequence(self, sequence: int, stem: str) -> str:
         return f"{sequence}. {stem or ''}".strip()
 
@@ -437,6 +731,12 @@ class WelcomePage(QWizardPage):
         cleaned = re.sub(r'[<>:"/\\\\|?*]+', "_", (name or "").strip())
         cleaned = cleaned.strip(" .")
         return cleaned or "导出结果"
+
+    def _default_export_dir(self) -> Path:
+        return self._state.last_export_dir or self._db_path.parent
+
+    def _current_db_path(self) -> Path:
+        return library_db_path_from_repo_parent_dir_text(self._state.default_repo_parent_dir_text)
 
     def _set_table_item(
         self,
@@ -552,7 +852,7 @@ class WelcomePage(QWizardPage):
         current = self._folder_tree.currentItem()
         if current is None:
             return
-        level_path = current.data(0, Qt.ItemDataRole.UserRole)
+        level_path = current.data(0, TREE_ROLE_LEVEL_PATH)
         if not level_path:
             return
         records = load_questions_by_level_path(self._db_path, str(level_path))
@@ -577,6 +877,10 @@ class _QuestionEditDialog(QDialog):
         self._option_2_edit = QLineEdit(record.option_2)
         self._option_3_edit = QLineEdit(record.option_3)
         self._option_4_edit = QLineEdit(record.option_4)
+        self._choice_1_edit = QLineEdit(record.choice_1)
+        self._choice_2_edit = QLineEdit(record.choice_2)
+        self._choice_3_edit = QLineEdit(record.choice_3)
+        self._choice_4_edit = QLineEdit(record.choice_4)
         self._answer_edit = QLineEdit(record.answer)
         self._analysis_edit = QTextEdit()
         self._analysis_edit.setPlainText(record.analysis)
@@ -592,6 +896,10 @@ class _QuestionEditDialog(QDialog):
         form.addRow("选项2：", self._option_2_edit)
         form.addRow("选项3：", self._option_3_edit)
         form.addRow("选项4：", self._option_4_edit)
+        form.addRow("组合A：", self._choice_1_edit)
+        form.addRow("组合B：", self._choice_2_edit)
+        form.addRow("组合C：", self._choice_3_edit)
+        form.addRow("组合D：", self._choice_4_edit)
         form.addRow("答案：", self._answer_edit)
         form.addRow("解析：", self._analysis_edit)
         form.addRow("来源文件名：", self._source_label)
@@ -615,6 +923,10 @@ class _QuestionEditDialog(QDialog):
             option_2=self._option_2_edit.text().strip(),
             option_3=self._option_3_edit.text().strip(),
             option_4=self._option_4_edit.text().strip(),
+            choice_1=self._choice_1_edit.text().strip(),
+            choice_2=self._choice_2_edit.text().strip(),
+            choice_3=self._choice_3_edit.text().strip(),
+            choice_4=self._choice_4_edit.text().strip(),
             answer=self._answer_edit.text().strip(),
             analysis=self._analysis_edit.toPlainText().strip(),
             question_type=self._type_combo.currentText().strip(),

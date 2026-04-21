@@ -5,22 +5,15 @@ from PyQt6.QtWidgets import QWizard
 
 from sj_generator.ui.constants import (
     PAGE_AI_ANALYSIS,
-    PAGE_AI_ANALYSIS_OPTION,
     PAGE_AI_IMPORT,
-    PAGE_AI_IMPORT_EDIT,
-    PAGE_AI_LEVEL_PATH,
     PAGE_AI_SELECT,
-    PAGE_DEDUPE_OPTION,
     PAGE_DEDUPE_RESULT,
     PAGE_IMPORT_SUCCESS,
-    PAGE_REVIEW,
 )
-from sj_generator.ui.pages.analysis_pages import AiAnalysisOptionPage, AiAnalysisPage
-from sj_generator.ui.pages.dedupe_pages import DedupeOptionPage, DedupeResultPage
+from sj_generator.ui.pages.analysis_pages import AiAnalysisPage
+from sj_generator.ui.pages.dedupe_pages import DedupeResultPage
 from sj_generator.ui.pages.export_pages import ImportSuccessPage
-from sj_generator.ui.pages.import_pages import AiImportPage, AiImportEditPage, AiSelectFilesPage
-from sj_generator.ui.pages.level_path_pages import AiLevelPathPage
-from sj_generator.ui.pages.review_pages import ReviewPage
+from sj_generator.ui.pages.import_pages import AiImportPage, AiSelectFilesPage
 from sj_generator.ui.state import WizardState
 
 DEFAULT_WINDOW_WIDTH = 976
@@ -31,12 +24,7 @@ QT_MAX_WINDOW_SIZE = 16777215
 def configure_import_flow_pages(wizard: QWizard, state: WizardState) -> None:
     wizard.setPage(PAGE_AI_SELECT, AiSelectFilesPage(state))
     wizard.setPage(PAGE_AI_IMPORT, AiImportPage(state))
-    wizard.setPage(PAGE_AI_IMPORT_EDIT, AiImportEditPage(state))
-    wizard.setPage(PAGE_AI_LEVEL_PATH, AiLevelPathPage(state))
-    wizard.setPage(PAGE_REVIEW, ReviewPage(state))
-    wizard.setPage(PAGE_DEDUPE_OPTION, DedupeOptionPage(state))
     wizard.setPage(PAGE_DEDUPE_RESULT, DedupeResultPage(state))
-    wizard.setPage(PAGE_AI_ANALYSIS_OPTION, AiAnalysisOptionPage(state))
     wizard.setPage(PAGE_AI_ANALYSIS, AiAnalysisPage(state))
     wizard.setPage(PAGE_IMPORT_SUCCESS, ImportSuccessPage(state))
 

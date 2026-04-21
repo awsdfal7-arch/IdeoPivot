@@ -34,13 +34,12 @@ from sj_generator.models import Question
 from sj_generator.paths import app_paths, common_mistakes_md_path
 from sj_generator.ui.state import (
     WizardState,
+    library_db_path_from_repo_parent_dir_text,
     normalize_ai_concurrency,
     normalize_analysis_model_name,
     normalize_analysis_provider,
 )
 from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_IMPORT_SUCCESS
-
-DEFAULT_LIBRARY_DB_PATH = Path(__file__).resolve().parents[3] / "converted_db" / "思政题库.db"
 
 def _analysis_provider_label(provider: str) -> str:
     labels = {"deepseek": "DeepSeek", "kimi": "Kimi", "qwen": "千问"}
@@ -67,7 +66,7 @@ def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool
 
     try:
         count = import_draft_questions_to_db(
-            db_path=DEFAULT_LIBRARY_DB_PATH,
+            db_path=library_db_path_from_repo_parent_dir_text(state.default_repo_parent_dir_text),
             questions=questions,
             level_path=level_path,
             source_files=state.ai_source_files or [],
@@ -458,6 +457,7 @@ class AiAnalysisPage(QWizardPage):
         self._current_label.setText("")
         questions: list[Question] = []
         for r in range(self._table.rowCount()):
+            original = self._state.draft_questions[r] if r < len(self._state.draft_questions) else None
             number = self._table.item(r, 0).text().strip() if self._table.item(r, 0) else ""
             stem = self._table.item(r, 1).text().strip() if self._table.item(r, 1) else ""
             options = self._table.item(r, 2).text().strip() if self._table.item(r, 2) else ""
@@ -465,7 +465,20 @@ class AiAnalysisPage(QWizardPage):
             analysis = self._table.item(r, 4).text().strip() if self._table.item(r, 4) else ""
             if not any([number, stem, options, answer, analysis]):
                 continue
-            questions.append(Question(number=number, stem=stem, options=options, answer=answer, analysis=analysis))
+            questions.append(
+                Question(
+                    number=number,
+                    stem=stem,
+                    options=options,
+                    answer=answer,
+                    analysis=analysis,
+                    question_type=original.question_type if original is not None else "",
+                    choice_1=original.choice_1 if original is not None else "",
+                    choice_2=original.choice_2 if original is not None else "",
+                    choice_3=original.choice_3 if original is not None else "",
+                    choice_4=original.choice_4 if original is not None else "",
+                )
+            )
 
         self._state.draft_questions = questions
         self._state.reset_db_import()

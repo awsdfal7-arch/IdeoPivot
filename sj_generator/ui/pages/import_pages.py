@@ -4,10 +4,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from docx import Document
-from PyQt6.QtCore import QBuffer, QObject, QSizeF, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent, QPageSize, QPdfWriter, QTextDocument
+from PyQt6.QtCore import QBuffer, QObject, QRegularExpression, QSizeF, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QPageSize,
+    QPdfWriter,
+    QRegularExpressionValidator,
+    QTextDocument,
+)
 from PyQt6.QtWidgets import (
-    QFileDialog,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -20,6 +28,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
     QWizardPage,
@@ -38,8 +47,9 @@ from sj_generator.config import (
 from sj_generator.io.source_reader import read_source_text
 from sj_generator.models import Question
 from sj_generator.ui.compare_highlight import compare_highlight_model_styles
-from sj_generator.ui.state import WizardState, normalize_ai_concurrency
-from sj_generator.ui.constants import PAGE_AI_IMPORT, PAGE_AI_IMPORT_EDIT, PAGE_AI_LEVEL_PATH
+from sj_generator.ui.pages.analysis_pages import _commit_draft_questions_to_db
+from sj_generator.ui.state import AiSourceFileItem, WizardState, normalize_ai_concurrency
+from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_AI_IMPORT, PAGE_DEDUPE_RESULT, PAGE_IMPORT_SUCCESS
 from sj_generator.ui.pdf_preview import DocumentPdfWebView
 
 
@@ -49,6 +59,11 @@ def _sanitize_filename(name: str) -> str:
     s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     s = s.strip(" .")
     return s
+
+
+DEFAULT_SOURCE_VERSION = "2026年春"
+LEVEL_PATH_RE = re.compile(r"^\d+\.\d+\.\d+$")
+LEVEL_PATH_EDIT_RE = QRegularExpression(r"\d*(?:\.\d*(?:\.\d*)?)?")
 
 
 def _unique_child_dir(parent: Path, base_name: str) -> Path:
@@ -113,48 +128,56 @@ def _merge_paths_text(existing_text: str, paths: list[Path]) -> str:
     return "; ".join(merged)
 
 
+class _LevelPathItemDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        editor.setPlaceholderText("例如：3.2.2")
+        editor.setValidator(QRegularExpressionValidator(LEVEL_PATH_EDIT_RE, editor))
+        return editor
+
+
 class AiSelectFilesPage(QWizardPage):
     def __init__(self, state: WizardState) -> None:
         super().__init__()
         self._state = state
-        self.setTitle("选择资料文件")
+        self.setTitle("确认导入资料")
         self.setAcceptDrops(True)
 
-        self._files_edit = QTextEdit()
-        self._files_edit.setReadOnly(True)
-        self._files_edit.setPlaceholderText("选择或把待处理的 docx/txt 资料文件拖动到此处")
-
-        browse_btn = QPushButton("选择文件…")
-        browse_btn.clicked.connect(self._browse)
-
-        row = QHBoxLayout()
-        row.addWidget(browse_btn)
-        row.addStretch(1)
-
-        file_hint = QLabel("左侧上方用于选择或拖入资料文件。")
-        file_hint.setWordWrap(True)
+        self._files_table = QTableWidget()
+        self._files_table.setColumnCount(3)
+        self._files_table.setHorizontalHeaderLabels(["名称", "版本", "层级"])
+        self._files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._files_table.verticalHeader().setVisible(False)
+        self._files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._files_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._files_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        self._files_table.setItemDelegateForColumn(2, _LevelPathItemDelegate(self._files_table))
+        self._files_table.itemSelectionChanged.connect(self._handle_selected_file_changed)
+        self._files_table.itemChanged.connect(self._handle_file_table_item_changed)
 
         left_top_layout = QVBoxLayout()
-        left_top_layout.addLayout(row)
-        left_top_layout.addWidget(self._files_edit, 1)
-        left_top_layout.addWidget(file_hint)
+        left_top_layout.addWidget(self._files_table, 1)
         left_top_panel = QWidget()
-        left_top_panel.setStyleSheet("border: 1px solid black;")
         left_top_panel.setLayout(left_top_layout)
 
-        self._import_reminder = QTextEdit()
-        self._import_reminder.setReadOnly(True)
-        self._import_reminder.setPlainText(
-            "导入提醒\n\n"
-            "1. 当前支持 docx 与 txt 文件。\n"
-            "2. 可点击“选择文件”或直接拖拽文件到左上区域。\n"
-            "3. 建议导入前先确认文档内容完整、题号清晰。\n"
-            "4. 点击“下一步”后将直接开始 AI 解析。"
-        )
+        self._import_reminder = QTableWidget()
+        self._import_reminder.setColumnCount(3)
+        self._import_reminder.setHorizontalHeaderLabels(["名称", "图片", "表格"])
+        self._import_reminder.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._import_reminder.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._import_reminder.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._import_reminder.verticalHeader().setVisible(False)
+        self._import_reminder.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._import_reminder.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._import_reminder.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._import_reminder.setWordWrap(False)
         left_bottom_layout = QVBoxLayout()
         left_bottom_layout.addWidget(self._import_reminder, 1)
         left_bottom_panel = QWidget()
-        left_bottom_panel.setStyleSheet("border: 1px solid black;")
         left_bottom_panel.setLayout(left_bottom_layout)
 
         left_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -167,9 +190,13 @@ class AiSelectFilesPage(QWizardPage):
 
         self._preview_placeholder = QTextEdit()
         self._preview_placeholder.setReadOnly(True)
-        self._preview_placeholder.setPlainText("文档预览区域\n\n请选择文件后预览。")
+        self._preview_placeholder.setFrameStyle(0)
+        self._preview_placeholder.setStyleSheet("background: transparent; border: none;")
+        self._preview_placeholder.setPlainText("")
         self._preview_text = QTextEdit()
         self._preview_text.setReadOnly(True)
+        self._preview_text.setFrameStyle(0)
+        self._preview_text.setStyleSheet("border: none;")
         self._preview_pdf_view = DocumentPdfWebView(self)
         self._preview_stack = QStackedWidget()
         self._preview_stack.addWidget(self._preview_placeholder)
@@ -178,10 +205,16 @@ class AiSelectFilesPage(QWizardPage):
         self._preview_temp_dir = TemporaryDirectory(prefix="sj_doc_preview_")
         self._preview_pdf_path = Path(self._preview_temp_dir.name) / "preview.pdf"
 
+        preview_frame_layout = QVBoxLayout()
+        preview_frame_layout.setContentsMargins(0, 0, 0, 0)
+        preview_frame_layout.addWidget(self._preview_stack, 1)
+        preview_frame = QWidget()
+        preview_frame.setStyleSheet("border: 1px solid black;")
+        preview_frame.setLayout(preview_frame_layout)
+
         right_layout = QVBoxLayout()
-        right_layout.addWidget(self._preview_stack, 1)
+        right_layout.addWidget(preview_frame, 1)
         right_panel = QWidget()
-        right_panel.setStyleSheet("border: 1px solid black;")
         right_panel.setLayout(right_layout)
 
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -189,23 +222,23 @@ class AiSelectFilesPage(QWizardPage):
         content_splitter.addWidget(right_panel)
         content_splitter.setChildrenCollapsible(False)
         content_splitter.setStretchFactor(0, 1)
-        content_splitter.setStretchFactor(1, 1)
-        content_splitter.setSizes([460, 460])
+        content_splitter.setStretchFactor(1, 5)
+        content_splitter.setSizes([160, 800])
 
         layout = QVBoxLayout()
         layout.addWidget(content_splitter, 1)
-        hint = QLabel("点击“下一步”后会直接开始解析。")
         self.setLayout(layout)
 
     def initializePage(self) -> None:
         if self._state.ai_source_files_text:
-            self._files_edit.setPlainText(self._display_paths_text(self._state.ai_source_files_text))
-            paths = self._state.ai_source_files or []
+            paths = self._state.ai_source_files or [
+                Path(p.strip()) for p in self._state.ai_source_files_text.split(";") if p.strip()
+            ]
+            self._set_selected_paths(paths)
             self._update_import_reminder(paths)
-            self._update_preview(paths)
         else:
+            self._set_selected_paths([])
             self._update_import_reminder([])
-            self._update_preview([])
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -215,26 +248,15 @@ class AiSelectFilesPage(QWizardPage):
 
     def dropEvent(self, event: QDropEvent) -> None:
         paths = _extract_paths_from_drop_event(event)
-        paths = [p for p in paths if p.suffix.lower() in (".docx", ".txt")]
+        paths = [p for p in paths if p.suffix.lower() == ".docx"]
         if paths:
             merged = _merge_paths_text(self._serialize_paths_text(), paths)
-            self._files_edit.setPlainText(self._display_paths_text(merged))
             merged_paths = [Path(p.strip()) for p in merged.split(";") if p.strip()]
+            self._set_selected_paths(merged_paths, selected_path=paths[0])
             self._update_import_reminder(merged_paths)
-            self._update_preview(merged_paths)
             event.acceptProposedAction()
         else:
             event.ignore()
-
-    def _browse(self) -> None:
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "选择资料文件", "", "Word (*.docx);;Text (*.txt);;All Files (*)"
-        )
-        if files:
-            selected_paths = [Path(p) for p in files]
-            self._files_edit.setPlainText("\n".join(files))
-            self._update_import_reminder(selected_paths)
-            self._update_preview(selected_paths)
 
     def validatePage(self) -> bool:
         raw = self._serialize_paths_text()
@@ -246,8 +268,27 @@ class AiSelectFilesPage(QWizardPage):
         if not paths:
             QMessageBox.warning(self, "文件不存在", "请选择存在的资料文件。")
             return False
+        invalid_levels = self._find_invalid_level_paths()
+        if invalid_levels:
+            names = "、".join(invalid_levels)
+            QMessageBox.warning(self, "层级格式无效", f"以下文件的层级不是三级数字格式：{names}\n请输入如 3.2.2 的形式。")
+            return False
+        items = self._collect_table_items()
+        level_paths = sorted({item.level_path.strip() for item in items if item.level_path.strip()})
+        if not level_paths:
+            QMessageBox.warning(self, "未填写层级", "请在“确认导入资料”页填写层级。")
+            return False
+        if len(level_paths) > 1:
+            QMessageBox.warning(
+                self,
+                "层级不一致",
+                "当前导入流程仅支持同一批次写入同一层级，请将本次资料的层级统一后再继续。",
+            )
+            return False
         self._state.ai_source_files = paths
         self._state.ai_source_files_text = raw
+        self._state.ai_source_file_items = items
+        self._state.ai_import_level_path = level_paths[0]
         if self._state.project_name_is_placeholder and self._state.project_dir is not None:
             first = paths[0]
             _rename_project(self._state, new_name=first.stem)
@@ -257,42 +298,175 @@ class AiSelectFilesPage(QWizardPage):
         return PAGE_AI_IMPORT
 
     def _serialize_paths_text(self) -> str:
-        raw = self._files_edit.toPlainText()
-        parts = [p.strip() for line in raw.splitlines() for p in line.split(";") if p.strip()]
+        parts: list[str] = []
+        for i in range(self._files_table.rowCount()):
+            item = self._files_table.item(i, 0)
+            raw = item.data(Qt.ItemDataRole.UserRole)
+            if raw:
+                parts.append(str(raw))
         return "; ".join(parts)
 
-    def _display_paths_text(self, raw: str) -> str:
-        parts = [p.strip() for p in raw.split(";") if p.strip()]
-        return "\n".join(parts)
+    def _set_selected_paths(self, paths: list[Path], *, selected_path: Path | None = None) -> None:
+        existing_map = {item.path: item for item in self._state.ai_source_file_items}
+        self._files_table.blockSignals(True)
+        self._files_table.setRowCount(0)
+        selected_row = 0
+        updated_items: list[AiSourceFileItem] = []
+        for index, path in enumerate(paths):
+            raw_path = str(path)
+            existing = existing_map.get(raw_path, AiSourceFileItem(path=raw_path))
+            default_version = existing.version or DEFAULT_SOURCE_VERSION
+            updated_items.append(
+                AiSourceFileItem(path=raw_path, version=default_version, level_path=existing.level_path)
+            )
+            self._files_table.insertRow(index)
+            name_item = QTableWidgetItem(path.name)
+            name_item.setToolTip(raw_path)
+            name_item.setData(Qt.ItemDataRole.UserRole, raw_path)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            version_item = QTableWidgetItem(default_version)
+            level_item = QTableWidgetItem(existing.level_path)
+            self._files_table.setItem(index, 0, name_item)
+            self._files_table.setItem(index, 1, version_item)
+            self._files_table.setItem(index, 2, level_item)
+            if selected_path is not None and path == selected_path:
+                selected_row = index
+        self._state.ai_source_file_items = updated_items
+        self._files_table.blockSignals(False)
+        if self._files_table.rowCount() == 0:
+            self._update_preview([])
+            return
+        self._files_table.selectRow(selected_row)
+
+    def _handle_selected_file_changed(self) -> None:
+        path = self._current_selected_path()
+        if path is None:
+            self._update_preview([])
+            return
+        self._update_preview([path])
+
+    def _handle_file_table_item_changed(self, item: QTableWidgetItem) -> None:
+        row = item.row()
+        path_item = self._files_table.item(row, 0)
+        if path_item is None:
+            return
+        raw_path = str(path_item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not raw_path:
+            return
+        version_item = self._files_table.item(row, 1)
+        level_item = self._files_table.item(row, 2)
+        version = (version_item.text() if version_item else "").strip() or DEFAULT_SOURCE_VERSION
+        if version_item is not None and version_item.text().strip() != version:
+            self._files_table.blockSignals(True)
+            version_item.setText(version)
+            self._files_table.blockSignals(False)
+        level_path = (level_item.text() if level_item else "").strip()
+        if item.column() == 2 and level_path and not self._is_valid_level_path(level_path):
+            self._files_table.blockSignals(True)
+            item.setText("")
+            self._files_table.blockSignals(False)
+            QMessageBox.warning(self, "层级格式无效", "层级只允许输入三级点连接的数字形式，例如 3.2.2。")
+            level_path = ""
+        self._upsert_source_file_item(raw_path, version=version, level_path=level_path)
+
+    def _current_selected_path(self) -> Path | None:
+        row = self._files_table.currentRow()
+        if row < 0:
+            return None
+        item = self._files_table.item(row, 0)
+        if item is None:
+            return None
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        if not raw:
+            return None
+        return Path(str(raw))
+
+    def _collect_table_items(self) -> list[AiSourceFileItem]:
+        items: list[AiSourceFileItem] = []
+        for row in range(self._files_table.rowCount()):
+            name_item = self._files_table.item(row, 0)
+            if name_item is None:
+                continue
+            raw_path = str(name_item.data(Qt.ItemDataRole.UserRole) or "").strip()
+            if not raw_path:
+                continue
+            version = (
+                (self._files_table.item(row, 1).text() if self._files_table.item(row, 1) else "").strip()
+                or DEFAULT_SOURCE_VERSION
+            )
+            level_path = (self._files_table.item(row, 2).text() if self._files_table.item(row, 2) else "").strip()
+            items.append(AiSourceFileItem(path=raw_path, version=version, level_path=level_path))
+        return items
+
+    def _upsert_source_file_item(self, raw_path: str, *, version: str, level_path: str) -> None:
+        updated = False
+        for item in self._state.ai_source_file_items:
+            if item.path == raw_path:
+                item.version = version
+                item.level_path = level_path
+                updated = True
+                break
+        if not updated:
+            self._state.ai_source_file_items.append(
+                AiSourceFileItem(path=raw_path, version=version, level_path=level_path)
+            )
+
+    def _find_invalid_level_paths(self) -> list[str]:
+        invalid_names: list[str] = []
+        for row in range(self._files_table.rowCount()):
+            name_item = self._files_table.item(row, 0)
+            level_item = self._files_table.item(row, 2)
+            if name_item is None or level_item is None:
+                continue
+            level_path = level_item.text().strip()
+            if level_path and (not self._is_valid_level_path(level_path)):
+                invalid_names.append(name_item.text().strip() or f"第{row + 1}行")
+        return invalid_names
+
+    def _is_valid_level_path(self, value: str) -> bool:
+        return bool(LEVEL_PATH_RE.fullmatch((value or "").strip()))
 
     def _update_import_reminder(self, paths: list[Path]) -> None:
         if not paths:
-            self._import_reminder.setPlainText(
-                "导入提醒\n\n"
-                "当前检查：\n"
-                "1. 尚未选择文件。\n"
-                "2. Word 文档中的图片检查：待检查。\n"
-                "3. Word 文档中的表格检查：待检查。"
-            )
+            self._import_reminder.clearContents()
+            self._import_reminder.setRowCount(0)
             return
 
-        lines = ["导入提醒", "", "当前检查："]
-        for path in paths:
-            ext = path.suffix.lower()
-            lines.append(f"- {path.name}")
-            if ext != ".docx":
-                lines.append("  图片：仅对 Word 文档检查")
-                lines.append("  表格：仅对 Word 文档检查")
-                continue
+        self._import_reminder.setRowCount(len(paths))
+        for row, path in enumerate(paths):
+            name_item = QTableWidgetItem(path.name)
+            name_item.setToolTip(str(path))
+            self._import_reminder.setItem(row, 0, name_item)
             has_image, has_table, error_text = self._inspect_docx_content(path)
             if error_text:
-                lines.append(f"  图片：检查失败（{error_text}）")
-                lines.append(f"  表格：检查失败（{error_text}）")
+                fail_text = f"失败：{error_text}"
+                self._import_reminder.setItem(row, 1, self._make_import_check_item(fail_text, "error"))
+                self._import_reminder.setItem(row, 2, self._make_import_check_item(fail_text, "error"))
                 continue
-            lines.append(f"  图片：{'存在' if has_image else '不存在'}")
-            lines.append(f"  表格：{'存在' if has_table else '不存在'}")
+            self._import_reminder.setItem(
+                row,
+                1,
+                self._make_import_check_item("发现" if has_image else "未发现", "found" if has_image else "clear"),
+            )
+            self._import_reminder.setItem(
+                row,
+                2,
+                self._make_import_check_item("发现" if has_table else "未发现", "found" if has_table else "clear"),
+            )
+        self._import_reminder.resizeRowsToContents()
 
-        self._import_reminder.setPlainText("\n".join(lines))
+    def _make_import_check_item(self, text: str, state: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        if state == "found":
+            item.setForeground(QBrush(QColor(156, 0, 6)))
+            item.setBackground(QBrush(QColor(255, 199, 206)))
+        elif state == "clear":
+            item.setForeground(QBrush(QColor(0, 97, 0)))
+            item.setBackground(QBrush(QColor(198, 239, 206)))
+        elif state == "error":
+            item.setForeground(QBrush(QColor(156, 0, 6)))
+            item.setBackground(QBrush(QColor(255, 235, 156)))
+        return item
 
     def _inspect_docx_content(self, path: Path) -> tuple[bool, bool, str]:
         try:
@@ -305,16 +479,12 @@ class AiSelectFilesPage(QWizardPage):
 
     def _update_preview(self, paths: list[Path]) -> None:
         if not paths:
-            self._preview_placeholder.setPlainText("文档预览区域\n\n请选择文件后预览。")
+            self._preview_placeholder.setPlainText("")
             self._preview_stack.setCurrentWidget(self._preview_placeholder)
             return
 
         path = paths[0]
         ext = path.suffix.lower()
-        if ext == ".txt":
-            self._preview_text.setPlainText(read_source_text(path))
-            self._preview_stack.setCurrentWidget(self._preview_text)
-            return
         if ext == ".docx":
             try:
                 pdf_data = self._build_docx_preview_pdf(path)
@@ -327,7 +497,7 @@ class AiSelectFilesPage(QWizardPage):
                 self._preview_stack.setCurrentWidget(self._preview_placeholder)
                 return
 
-        self._preview_placeholder.setPlainText("文档预览区域\n\n当前文件类型暂不支持预览。")
+        self._preview_placeholder.setPlainText("文档预览区域\n\n当前仅支持 Word 文档预览。")
         self._preview_stack.setCurrentWidget(self._preview_placeholder)
 
     def _build_docx_preview_pdf(self, path: Path) -> bytes:
@@ -373,9 +543,9 @@ class AiImportPage(QWizardPage):
         self._status_label.setWordWrap(True)
 
         self._detail_table = QTableWidget()
-        self._detail_table.setColumnCount(10)
+        self._detail_table.setColumnCount(7)
         self._detail_table.setHorizontalHeaderLabels(
-            ["题号", "轮次", "DeepSeek耗时(s)", "Kimi耗时(s)", "千问耗时(s)", "DeepSeek返回", "Kimi返回", "千问返回", "比对结论", "最终答案"]
+            ["Deepseek耗时", "Kimi耗时", "千问耗时", "Deepseek返回", "Kimi返回", "千问返回", "对比结论"]
         )
         self._detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._detail_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -449,7 +619,9 @@ class AiImportPage(QWizardPage):
             QTimer.singleShot(0, self._start_import)
 
     def nextId(self) -> int:
-        return PAGE_AI_IMPORT_EDIT
+        if self._state.dedupe_enabled:
+            return PAGE_DEDUPE_RESULT
+        return PAGE_AI_ANALYSIS if self._state.analysis_enabled else PAGE_IMPORT_SUCCESS
 
     def isComplete(self) -> bool:
         if self._running or self._failed:
@@ -462,9 +634,14 @@ class AiImportPage(QWizardPage):
         if self._running:
             return False
         if not self._items:
-            QMessageBox.warning(self, "暂无结果", "当前没有可进入编辑的题目。")
+            QMessageBox.warning(self, "暂无结果", "当前没有可进入下一步的题目。")
             return False
         self._state.ai_import_questions = list(self._items)
+        self._state.draft_questions = list(self._items)
+        self._state.dedupe_hits = None
+        self._state.reset_db_import()
+        if not self._state.dedupe_enabled and not self._state.analysis_enabled:
+            return _commit_draft_questions_to_db(self, self._state)
         self.completeChanged.emit()
         return True
 
@@ -559,7 +736,6 @@ class AiImportPage(QWizardPage):
             row = self._detail_table.rowCount()
             self._detail_table.setRowCount(row + 1)
             self._detail_row_map[idx] = row
-            self._detail_table.setItem(row, 0, QTableWidgetItem(str(idx)))
         round_no = payload.get("round")
         round_no_int = int(round_no or 0)
         self._record_round_sec(
@@ -583,31 +759,27 @@ class AiImportPage(QWizardPage):
             sec_value=payload.get("qwen_sec"),
             ms_value=payload.get("qwen_ms"),
         )
-        self._detail_table.setItem(row, 1, QTableWidgetItem(str(round_no or "")))
         self._detail_table.setItem(
             row,
-            2,
+            0,
             QTableWidgetItem(self._format_round_secs(idx=idx, model_key="deepseek")),
         )
         self._detail_table.setItem(
             row,
-            3,
+            1,
             QTableWidgetItem(self._format_round_secs(idx=idx, model_key="kimi")),
         )
         self._detail_table.setItem(
             row,
-            4,
+            2,
             QTableWidgetItem(self._format_round_secs(idx=idx, model_key="qwen")),
         )
-        self._detail_table.setItem(row, 5, QTableWidgetItem(self._format_payload_cell(payload.get("deepseek"))))
-        self._detail_table.setItem(row, 6, QTableWidgetItem(self._format_payload_cell(payload.get("kimi"))))
-        self._detail_table.setItem(row, 7, QTableWidgetItem(self._format_payload_cell(payload.get("qwen"))))
+        self._detail_table.setItem(row, 3, QTableWidgetItem(self._format_payload_cell(payload.get("deepseek"))))
+        self._detail_table.setItem(row, 4, QTableWidgetItem(self._format_payload_cell(payload.get("kimi"))))
+        self._detail_table.setItem(row, 5, QTableWidgetItem(self._format_payload_cell(payload.get("qwen"))))
         self._apply_partial_pass_highlight(row=row, payload=payload)
         verdict = self._build_compare_verdict(payload)
-        self._detail_table.setItem(row, 8, QTableWidgetItem(verdict))
-        acc = payload.get("accepted_obj") or {}
-        if isinstance(acc, dict):
-            self._detail_table.setItem(row, 9, QTableWidgetItem(str(acc.get("answer") or "")))
+        self._detail_table.setItem(row, 6, QTableWidgetItem(verdict))
         self._schedule_detail_row_resize()
         round_no = payload.get("round") or "?"
         self._cur_question_no = str(idx)
@@ -660,7 +832,7 @@ class AiImportPage(QWizardPage):
         return "+".join(parts)
 
     def _clear_compare_cell_bg(self, row: int) -> None:
-        for col in [5, 6, 7]:
+        for col in [3, 4, 5]:
             item = self._detail_table.item(row, col)
             if item is not None:
                 item.setBackground(QBrush())
@@ -686,7 +858,7 @@ class AiImportPage(QWizardPage):
 
     def _apply_partial_pass_highlight(self, *, row: int, payload: dict[str, object]) -> None:
         self._clear_compare_cell_bg(row)
-        model_cols = [("deepseek", 5), ("kimi", 6), ("qwen", 7)]
+        model_cols = [("deepseek", 3), ("kimi", 4), ("qwen", 5)]
         highlight_styles = compare_highlight_model_styles(
             model_sigs={key: self._highlight_sig_text(payload.get(key)) for key, _ in model_cols},
             round_no=int(payload.get("round") or 0),
@@ -725,9 +897,9 @@ class AiImportPage(QWizardPage):
 
     def _on_done(self, total: int) -> None:
         if self._stopped and not self._failed:
-            self._phase_text = f"已停止：当前 {total} 题（请确认详情后进入编辑页）"
+            self._phase_text = f"已停止：当前 {total} 题（可继续进入下一步）"
         else:
-            self._phase_text = f"解析完成：{total} 题（请确认详情后进入编辑页）"
+            self._phase_text = f"解析完成：{total} 题（可继续进入下一步）"
         if self._progress.maximum() > 0:
             self._progress.setValue(self._progress.maximum())
             self._progress_cur = self._progress.maximum()
@@ -889,6 +1061,8 @@ class _AiImportWorker(QObject):
         try:
             sources: list[tuple[Path, str]] = []
             for p in self._paths:
+                if p.suffix.lower() != ".docx":
+                    raise RuntimeError(f"当前仅支持 Word 文档导入：{p.name}")
                 sources.append((p, read_source_text(p)))
 
             client = LlmClient(to_llm_config(self._cfg))
@@ -980,6 +1154,7 @@ class AiImportEditPage(QWizardPage):
     def validatePage(self) -> bool:
         questions: list[Question] = []
         for r in range(self._table.rowCount()):
+            original = self._state.ai_import_questions[r] if r < len(self._state.ai_import_questions or []) else None
             number = self._table.item(r, 0).text().strip() if self._table.item(r, 0) else ""
             stem = self._table.item(r, 1).text().strip() if self._table.item(r, 1) else ""
             options = self._table.item(r, 2).text().strip() if self._table.item(r, 2) else ""
@@ -987,7 +1162,20 @@ class AiImportEditPage(QWizardPage):
             analysis = self._table.item(r, 4).text().strip() if self._table.item(r, 4) else ""
             if not any([number, stem, options, answer, analysis]):
                 continue
-            questions.append(Question(number=number, stem=stem, options=options, answer=answer, analysis=analysis))
+            questions.append(
+                Question(
+                    number=number,
+                    stem=stem,
+                    options=options,
+                    answer=answer,
+                    analysis=analysis,
+                    question_type=original.question_type if original is not None else "",
+                    choice_1=original.choice_1 if original is not None else "",
+                    choice_2=original.choice_2 if original is not None else "",
+                    choice_3=original.choice_3 if original is not None else "",
+                    choice_4=original.choice_4 if original is not None else "",
+                )
+            )
         if not questions:
             QMessageBox.warning(self, "没有可写入内容", "没有可写入的题目。")
             return False

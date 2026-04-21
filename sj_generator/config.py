@@ -196,8 +196,7 @@ def save_qwen_config(cfg: QwenConfig) -> None:
 
 
 def load_welcome_table_column_visibility() -> dict[str, bool]:
-    path = _welcome_view_config_path()
-    data = _load_json_config_file(path)
+    data = _load_welcome_view_config()
     raw = data.get("table_column_visibility")
     if not isinstance(raw, dict):
         return {}
@@ -209,10 +208,31 @@ def load_welcome_table_column_visibility() -> dict[str, bool]:
 
 
 def save_welcome_table_column_visibility(visibility: dict[str, bool]) -> None:
-    path = _welcome_view_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"table_column_visibility": {str(key): bool(value) for key, value in visibility.items()}}
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_welcome_view_config_values(
+        {"table_column_visibility": {str(key): bool(value) for key, value in visibility.items()}}
+    )
+
+
+def load_welcome_tree_expanded_prefixes() -> list[str] | None:
+    data = _load_welcome_view_config()
+    raw = data.get("tree_expanded_prefixes")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return []
+    return [str(value).strip() for value in raw if str(value).strip()]
+
+
+def save_welcome_tree_expanded_prefixes(prefixes: list[str]) -> None:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in prefixes:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    _save_welcome_view_config_values({"tree_expanded_prefixes": normalized})
 
 
 def to_qwen_llm_config(cfg: QwenConfig) -> LlmConfig:
@@ -283,6 +303,18 @@ def _welcome_view_config_path() -> Path:
     if env:
         return Path(env)
     return _default_config_dir() / "welcome_view.json"
+
+
+def _load_welcome_view_config() -> dict:
+    return _load_json_config_file(_welcome_view_config_path())
+
+
+def _save_welcome_view_config_values(values: dict) -> None:
+    path = _welcome_view_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _load_json_config_file(path)
+    data.update(values)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_json_config_file(path: Path) -> dict:

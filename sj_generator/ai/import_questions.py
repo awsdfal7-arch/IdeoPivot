@@ -312,6 +312,39 @@ def _collect_question_result(
         question_cb(q)
 
 
+def _question_extract_prompt_rules() -> str:
+    return (
+        "你是一个题库整理助手。你必须仅输出严格 JSON，不要输出任何解释、markdown、前后缀、代码块或额外文本。\n"
+        "任务：从提供的资料文本中抽取选择题。\n"
+        "题目可能是以下三类之一：\n"
+        "- 单选：选项标识通常为 A/B/C/D 或 A. / A、 等，答案是单个选项标识。\n"
+        "- 多选：答案本身是多个选项标识的组合。\n"
+        "- 可转多选：题干或材料中先给出 ①②③④ 等若干表述，再由 A/B/C/D 表示这些表述的不同组合；这类题本质上是组合型选择题。\n"
+        "如果原文没有明确答案，answer 允许为空字符串。\n"
+        "不要生成解析，也不要输出任何解析字段。\n"
+        "字段规则必须严格遵守：\n"
+        '1. question_type 必须输出且只能是 "单选"、"多选"、"可转多选" 三者之一。\n'
+        '2. number 只保留题号本身，例如 "12"；不要保留 "第12题"、"12."、"12、"、括号等；没有明确题号时填空字符串。\n'
+        '3. stem 只保留题干正文；不要包含题号、选项、答案、解析、"答案："、"解析：" 等内容。\n'
+        '4. options 只保留选项内容，并保留原始选项标识；每个选项单独一行；不要把题干、答案、解析混入 options。\n'
+        '5. answer 只保留答案标识本身；不要包含 "答案" 二字、冒号、句号、解释文字或空格。\n'
+        '6. 普通单选答案统一输出单个标识，如 A / B / C / D。\n'
+        '7. 普通多选答案统一输出紧凑组合，不加顿号、逗号、空格或斜杠，例如 ACD、ABD。\n'
+        '8. 可转多选题中，若原文先给出 ①②③④ 等表述，再给出 A/B/C/D 代表不同组合，则 options 只保留 ①②③④ 表述本身，不保留 A/B/C/D 组合项。\n'
+        '9. 可转多选题必须额外输出 choice_1、choice_2、choice_3、choice_4 四个字段，分别对应 A、B、C、D 的组合映射；字段值只保留数字序号本身，例如 A 对应 ①②，则 choice_1 输出 "12"。\n'
+        '10. 可转多选题的 answer 必须输出正常字母答案 A/B/C/D，不要输出圆圈序号。\n'
+        "10.1 结构一致性强约束：如果 question_type 是可转多选，那么必须同时满足“options 为 ①②③④ 表述”“choice_1..choice_4 为数字映射”“answer 为 A/B/C/D”。\n"
+        "11. 如果原文出现材料、案例或引导语，且该内容属于该题题干的一部分，应保留在 stem 中。\n"
+        "12. 不要凭空编造不存在的题目、选项或答案；无法确定时宁可留空，也不要猜测。\n"
+        "13. 如遇图片题、表格题或信息缺失题，只提取文本中能够明确确认的内容。\n"
+        "如果题目出现“组合选项”形式（例如先给出 ①②③④ 四个表述，然后给出 A/B/C/D 代表不同组合，如“ A．①② B．①④ … ”），请按以下方式转换：\n"
+        "- options 只输出 ①②③④ 对应的每条表述（不要包含 A/B/C/D 这些组合项）\n"
+        '- question_type 必须输出为 "可转多选"\n'
+        '- choice_1 到 choice_4 分别输出 A 到 D 对应的数字映射，例如 A．①② 则 choice_1 输出 "12"\n'
+        "- answer 必须输出正确选项字母，例如 B\n"
+    )
+
+
 def _extract_questions_from_chunk(
     *,
     client: LlmClient,
@@ -319,22 +352,21 @@ def _extract_questions_from_chunk(
     chunk_text: str,
 ) -> list[dict[str, Any]]:
     sys_prompt = (
-        "你是一个题库整理助手。你必须仅输出严格 JSON（不要输出任何解释/markdown/多余文本）。\n"
-        "任务：从提供的资料文本中抽取选择题。\n"
-        "题目可能是单选（选项标识 A/B/C/D 或 A. / A、）或多选（选项标识 ①②③④ 等）。\n"
-        "如果原文没有明确答案，answer 允许为空字符串。\n"
-        "不要生成解析，也不要输出任何解析字段。\n"
-        "如果题目出现“组合选项”形式（例如先给出 ①②③④ 四个表述，然后给出 A/B/C/D 代表不同组合，如“ A．①② B．①④ … ”），请按以下方式转换：\n"
-        "- options 只输出 ①②③④ 对应的每条表述（不要包含 A/B/C/D 这些组合项）\n"
-        "- answer 必须输出圆圈数字序号组合（例如 ①④），不要输出 A/B/C/D\n"
-        "不要凭空编造不存在的题目或选项；尽量忠实于原文。\n"
+        _question_extract_prompt_rules()
+        +
         "输出格式：JSON 数组，每项为对象：\n"
         "{\n"
+        '  "question_type": "题型(单选/多选/可转多选；可转多选示例：可转多选)",\n'
         '  "number": "编号(可为空)",\n'
-        '  "stem": "题干",\n'
-        '  "options": "选项原文(包含标识，允许换行)",\n'
-        '  "answer": "答案(单选如 A 或 ①；多选如 ACD 或 ①②③)"\n'
+        '  "stem": "题干(普通题示例：我国社会主义民主政治的本质特征是什么？；可转多选题示例：阅读材料，贯彻绿色发展理念需要坚持哪些做法？)",\n'
+        '  "options": "选项原文(包含标识，允许换行。单选示例：A.坚持党的领导\\nB.坚持人民当家作主；多选示例：A.公有制经济\\nB.集体经济\\nC.混合所有制经济；可转多选示例：①坚持节约资源\\n②坚持保护环境\\n③坚持绿色发展\\n④坚持高耗能发展)",\n'
+        '  "choice_1": "可转多选时 A 对应的数字映射，例如 12；非可转多选留空",\n'
+        '  "choice_2": "可转多选时 B 对应的数字映射，例如 14；非可转多选留空",\n'
+        '  "choice_3": "可转多选时 C 对应的数字映射，例如 23；非可转多选留空",\n'
+        '  "choice_4": "可转多选时 D 对应的数字映射，例如 24；非可转多选留空",\n'
+        '  "answer": "答案(单选示例：A；多选示例：ACD；可转多选示例：B)"\n'
         "}\n"
+        "如果某一题无法稳定识别，请不要输出半截对象，也不要输出无意义字段。\n"
     )
 
     user_prompt = (
@@ -352,7 +384,7 @@ def _extract_questions_from_chunk(
         out: list[dict[str, Any]] = []
         for it in data:
             if isinstance(it, dict):
-                out.append(it)
+                out.append(_normalize_question_obj_for_view(it))
         return out
     return []
 
@@ -420,22 +452,22 @@ def _get_question_n_in_chunk(
     index: int,
 ) -> dict[str, Any]:
     sys_prompt = (
-        "你是一个题库整理助手。你必须仅输出严格 JSON（不要输出任何解释/markdown/多余文本）。\n"
-        "任务：从提供的资料文本中抽取指定序号的选择题。\n"
-        "题目可能是单选（选项标识 A/B/C/D 或 A. / A、）或多选（选项标识 ①②③④ 等）。\n"
-        "如果原文没有明确答案，answer 允许为空字符串。\n"
-        "不要生成解析，也不要输出任何解析字段。\n"
-        "如果题目出现“组合选项”形式（例如先给出 ①②③④ 四个表述，然后给出 A/B/C/D 代表不同组合，如“ A．①② B．①④ … ”），请按以下方式转换：\n"
-        "- options 只输出 ①②③④ 对应的每条表述（不要包含 A/B/C/D 这些组合项）\n"
-        "- answer 必须输出圆圈数字序号组合（例如 ①④），不要输出 A/B/C/D\n"
+        _question_extract_prompt_rules()
+        +
+        "这里的任务是：从提供的资料文本中抽取指定序号的那一题。\n"
         "输出格式：JSON 对象：\n"
         "{\n"
+        '  "question_type": "题型(单选/多选/可转多选；可转多选示例：可转多选)",\n'
         '  "number": "编号(可为空)",\n'
-        '  "stem": "题干",\n'
-        '  "options": "选项原文(包含标识，允许换行)",\n'
-        '  "answer": "答案(单选如 A 或 ①；多选如 ACD 或 ①②③)"\n'
+        '  "stem": "题干(普通题示例：我国社会主义民主政治的本质特征是什么？；可转多选题示例：阅读材料，贯彻绿色发展理念需要坚持哪些做法？)",\n'
+        '  "options": "选项原文(包含标识，允许换行。单选示例：A.坚持党的领导\\nB.坚持人民当家作主；多选示例：A.公有制经济\\nB.集体经济\\nC.混合所有制经济；可转多选示例：①坚持节约资源\\n②坚持保护环境\\n③坚持绿色发展\\n④坚持高耗能发展)",\n'
+        '  "choice_1": "可转多选时 A 对应的数字映射，例如 12；非可转多选留空",\n'
+        '  "choice_2": "可转多选时 B 对应的数字映射，例如 14；非可转多选留空",\n'
+        '  "choice_3": "可转多选时 C 对应的数字映射，例如 23；非可转多选留空",\n'
+        '  "choice_4": "可转多选时 D 对应的数字映射，例如 24；非可转多选留空",\n'
+        '  "answer": "答案(单选示例：A；多选示例：ACD；可转多选示例：B)"\n'
         "}\n"
-        "如果无法确定该题，请输出空对象 {}。"
+        "如果无法确定该题，请输出空对象 {}。不要猜测，不要补全文本。"
     )
     user_prompt = (
         f"来源文件：{source_name}\n"
@@ -446,7 +478,7 @@ def _get_question_n_in_chunk(
         "-----\n"
     )
     data = client.chat_json(system=sys_prompt, user=user_prompt)
-    return data if isinstance(data, dict) else {}
+    return _normalize_question_obj_for_view(data) if isinstance(data, dict) else {}
 
 
 def _count_questions_with_fallback(
@@ -666,31 +698,39 @@ def _to_question(obj: dict[str, Any]) -> Question:
         options_str = _options_to_string(options)
     answer = _as_str(obj.get("answer", ""))
     analysis = ""
-    q = Question(number=number, stem=stem, options=options_str, answer=answer, analysis=analysis)
+    q = Question(
+        number=number,
+        stem=stem,
+        options=options_str,
+        answer=answer,
+        analysis=analysis,
+        question_type=_normalize_question_type_value(obj),
+        choice_1=_normalize_choice_digits(_as_str(obj.get("choice_1", ""))),
+        choice_2=_normalize_choice_digits(_as_str(obj.get("choice_2", ""))),
+        choice_3=_normalize_choice_digits(_as_str(obj.get("choice_3", ""))),
+        choice_4=_normalize_choice_digits(_as_str(obj.get("choice_4", ""))),
+    )
     return _normalize_combination_question(q)
 
 
 def _normalize_combination_question(q: Question) -> Question:
     combined = "\n".join([q.stem or "", q.options or ""]).strip()
-    if not combined:
+    if not combined and not _question_choice_map(q):
         return q
 
     statements = _extract_circled_statements(combined)
-    combos = _extract_combo_map(combined)
-    if len(statements) < 3 or len(combos) < 2:
+    combos = _question_choice_map(q) or _extract_combo_map(combined)
+    is_convertible = q.question_type == "可转多选" or bool(combos)
+    if not is_convertible:
+        return q
+
+    if len(statements) < 2 and q.options.strip():
+        statements = _split_circled_option_lines(q.options)
+    if len(statements) < 2:
         return q
 
     answer = (q.answer or "").strip().replace(" ", "")
-    if answer and _LETTER_ONLY_RE.fullmatch(answer):
-        selected: set[str] = set()
-        for ch in answer:
-            digits = combos.get(ch, "")
-            for d in _CIRCLED_RE.findall(digits):
-                selected.add(d)
-        answer = _sort_circled("".join(selected))
-    else:
-        if _CIRCLED_RE.search(answer):
-            answer = _sort_circled("".join(_CIRCLED_RE.findall(answer)))
+    answer = _normalize_convertible_answer(answer, combos)
 
     new_options = "\n".join(statements).strip()
     new_stem = q.stem
@@ -706,6 +746,11 @@ def _normalize_combination_question(q: Question) -> Question:
         options=new_options,
         answer=answer,
         analysis=q.analysis,
+        question_type="可转多选",
+        choice_1=combos.get("A", ""),
+        choice_2=combos.get("B", ""),
+        choice_3=combos.get("C", ""),
+        choice_4=combos.get("D", ""),
     )
 
 
@@ -713,10 +758,59 @@ def _extract_combo_map(text: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for m in _COMBO_RE.finditer(text):
         letter = m.group(1)
-        digits = "".join(_CIRCLED_RE.findall(m.group(2)))
+        digits = _normalize_choice_digits("".join(_CIRCLED_RE.findall(m.group(2))))
         if digits:
             out[letter] = digits
     return out
+
+
+def _split_circled_option_lines(text: str) -> list[str]:
+    return [line.strip() for line in _normalize_text(text).split("\n") if line.strip() and _CIRCLED_RE.match(line.strip())]
+
+
+def _question_choice_map(q: Question) -> dict[str, str]:
+    return {
+        letter: value
+        for letter, value in (
+            ("A", _normalize_choice_digits(q.choice_1)),
+            ("B", _normalize_choice_digits(q.choice_2)),
+            ("C", _normalize_choice_digits(q.choice_3)),
+            ("D", _normalize_choice_digits(q.choice_4)),
+        )
+        if value
+    }
+
+
+def _normalize_choice_digits(text: str) -> str:
+    if not text:
+        return ""
+    circled_chars = _CIRCLED_RE.findall(text)
+    if circled_chars:
+        return "".join(str(ord(ch) - 0x245F) for ch in circled_chars)
+    return "".join(re.findall(r"\d+", text))
+
+
+def _normalize_convertible_answer(answer: str, combo_map: dict[str, str]) -> str:
+    upper = _as_str(answer).replace(" ", "").upper()
+    if not upper:
+        return ""
+    if _LETTER_ONLY_RE.fullmatch(upper):
+        return upper
+    digits = _normalize_choice_digits(upper)
+    if digits:
+        mapped = _choice_digits_to_letter(digits, combo_map)
+        return mapped or digits
+    return upper
+
+
+def _choice_digits_to_letter(digits: str, combo_map: dict[str, str]) -> str:
+    normalized = _normalize_choice_digits(digits)
+    if not normalized:
+        return ""
+    for letter in ("A", "B", "C", "D"):
+        if _normalize_choice_digits(combo_map.get(letter, "")) == normalized:
+            return letter
+    return ""
 
 
 def _extract_circled_statements(text: str) -> list[str]:
@@ -827,7 +921,35 @@ def _is_valid_question_obj(obj: dict[str, Any]) -> bool:
         opt_text = json.dumps(_normalize_options_dict(options), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     else:
         opt_text = _normalize_text(_options_to_string(options))
-    return bool(stem and opt_text)
+    answer = _as_str(obj.get("answer", "")).replace(" ", "").upper()
+    question_type = _normalize_question_type_value(obj)
+    has_choice_fields = _has_choice_fields_obj(obj)
+    if _has_circled_only_options(opt_text) and _has_letter_only_answer(answer) and not has_choice_fields:
+        return False
+    if question_type == "可转多选" and not has_choice_fields and not _extract_combo_map("\n".join([stem, opt_text])):
+        return False
+    return bool(stem and opt_text and question_type)
+
+
+def _has_circled_only_options(options_text: str) -> bool:
+    text = _normalize_text(options_text)
+    if not text:
+        return False
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if len(lines) < 2:
+        return False
+    circled_lines = 0
+    letter_lines = 0
+    for line in lines:
+        if line and _CIRCLED_RE.match(line):
+            circled_lines += 1
+        if re.match(r"^[A-D][\.．、]", line):
+            letter_lines += 1
+    return circled_lines >= 2 and letter_lines == 0
+
+
+def _has_letter_only_answer(answer: str) -> bool:
+    return bool(answer) and bool(_LETTER_ONLY_RE.fullmatch(answer))
 
 
 def _normalize_options_dict(d: dict[str, Any]) -> dict[str, str]:
@@ -897,15 +1019,16 @@ def _normalize_question_obj_for_view(obj: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(obj, dict) or not obj:
         return {}
     out = dict(obj)
-    number, stem = _split_number_and_stem(_as_str(out.get("number", "")), _as_str(out.get("stem", "")))
-    out["number"] = number
-    out["stem"] = stem
-    options = out.get("options", "")
-    if isinstance(options, dict):
-        out["options"] = _normalize_options_dict(options)
-    else:
-        out["options"] = _options_to_string(options)
-    out["answer"] = _as_str(out.get("answer", ""))
+    q = _to_question(out)
+    out["number"] = q.number
+    out["stem"] = q.stem
+    out["options"] = q.options
+    out["answer"] = q.answer
+    out["question_type"] = q.question_type or _normalize_question_type_value(out)
+    out["choice_1"] = q.choice_1
+    out["choice_2"] = q.choice_2
+    out["choice_3"] = q.choice_3
+    out["choice_4"] = q.choice_4
     return out
 
 
@@ -920,6 +1043,7 @@ def _normalize_text(text: str) -> str:
 def _fingerprint_question_obj(obj: dict[str, Any]) -> str:
     if not isinstance(obj, dict):
         return ""
+    question_type = _normalize_question_type_value(obj)
     stem = _normalize_text(_as_str(obj.get("stem", "")))
     answer = _as_str(obj.get("answer", "")).replace(" ", "").upper()
     options = obj.get("options", "")
@@ -927,5 +1051,51 @@ def _fingerprint_question_obj(obj: dict[str, Any]) -> str:
         options_norm: Any = _normalize_options_dict(options)
     else:
         options_norm = _normalize_text(_options_to_string(options))
-    payload = {"stem": stem, "options": options_norm, "answer": answer}
+    payload = {
+        "question_type": question_type,
+        "stem": stem,
+        "options": options_norm,
+        "answer": answer,
+        "choice_1": _normalize_choice_digits(_as_str(obj.get("choice_1", ""))),
+        "choice_2": _normalize_choice_digits(_as_str(obj.get("choice_2", ""))),
+        "choice_3": _normalize_choice_digits(_as_str(obj.get("choice_3", ""))),
+        "choice_4": _normalize_choice_digits(_as_str(obj.get("choice_4", ""))),
+    }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_question_type_value(obj: dict[str, Any]) -> str:
+    raw = _as_str(obj.get("question_type", ""))
+    if raw in ("单选", "多选", "可转多选"):
+        return raw
+    if _has_choice_fields_obj(obj):
+        return "可转多选"
+    options = obj.get("options", "")
+    if isinstance(options, dict):
+        options_text = json.dumps(_normalize_options_dict(options), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    else:
+        options_text = _normalize_text(_options_to_string(options))
+    answer = _as_str(obj.get("answer", "")).replace(" ", "").upper()
+    if _has_circled_only_options(options_text):
+        return "可转多选"
+    if _has_multi_answer(answer):
+        return "多选"
+    return "单选"
+
+
+def _has_choice_fields_obj(obj: dict[str, Any]) -> bool:
+    return any(
+        _normalize_choice_digits(_as_str(obj.get(key, "")))
+        for key in ("choice_1", "choice_2", "choice_3", "choice_4")
+    )
+
+
+def _has_multi_answer(answer: str) -> bool:
+    if not answer:
+        return False
+    if "," in answer:
+        return len([part.strip() for part in answer.split(",") if part.strip()]) > 1
+    if _LETTER_ONLY_RE.fullmatch(answer):
+        return len(answer) > 1
+    circled_chars = _CIRCLED_RE.findall(answer)
+    return len(circled_chars) > 1

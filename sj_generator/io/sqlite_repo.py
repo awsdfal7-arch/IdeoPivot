@@ -16,6 +16,10 @@ class DbQuestionRecord:
     option_2: str
     option_3: str
     option_4: str
+    choice_1: str
+    choice_2: str
+    choice_3: str
+    choice_4: str
     answer: str
     analysis: str
     question_type: str
@@ -48,6 +52,7 @@ def load_questions_by_level_path(path: Path, level_path: str) -> list[DbQuestion
     if not path.exists():
         return []
     with sqlite3.connect(path) as conn:
+        _create_table(conn)
         rows = conn.execute(
             f"""
             SELECT
@@ -57,6 +62,10 @@ def load_questions_by_level_path(path: Path, level_path: str) -> list[DbQuestion
                 option_2,
                 option_3,
                 option_4,
+                choice_1,
+                choice_2,
+                choice_3,
+                choice_4,
                 answer,
                 analysis,
                 question_type,
@@ -81,6 +90,7 @@ def load_all_questions(path: Path) -> list[DbQuestionRecord]:
     if not path.exists():
         return []
     with sqlite3.connect(path) as conn:
+        _create_table(conn)
         rows = conn.execute(
             f"""
             SELECT
@@ -90,6 +100,10 @@ def load_all_questions(path: Path) -> list[DbQuestionRecord]:
                 option_2,
                 option_3,
                 option_4,
+                choice_1,
+                choice_2,
+                choice_3,
+                choice_4,
                 answer,
                 analysis,
                 question_type,
@@ -112,6 +126,7 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
     if not path.exists():
         raise FileNotFoundError(path)
     with sqlite3.connect(path) as conn:
+        _create_table(conn)
         conn.execute(
             f"""
             UPDATE {TABLE_NAME}
@@ -121,6 +136,10 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
                 option_2 = ?,
                 option_3 = ?,
                 option_4 = ?,
+                choice_1 = ?,
+                choice_2 = ?,
+                choice_3 = ?,
+                choice_4 = ?,
                 answer = ?,
                 analysis = ?,
                 question_type = ?,
@@ -140,6 +159,10 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
                 question.option_2,
                 question.option_3,
                 question.option_4,
+                question.choice_1,
+                question.choice_2,
+                question.choice_3,
+                question.choice_4,
                 question.answer,
                 question.analysis,
                 question.question_type,
@@ -155,6 +178,62 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
             ),
         )
         conn.commit()
+
+
+def delete_questions_by_level_path(path: Path, level_path: str) -> int:
+    if not path.exists():
+        return 0
+    normalized_level_path = str(level_path or "").strip()
+    if not normalized_level_path:
+        return 0
+    with sqlite3.connect(path) as conn:
+        _create_table(conn)
+        cur = conn.execute(
+            f"DELETE FROM {TABLE_NAME} WHERE level_path = ?",
+            (normalized_level_path,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def count_questions_by_level_prefix(path: Path, level_prefix: str) -> int:
+    if not path.exists():
+        return 0
+    normalized_level_prefix = str(level_prefix or "").strip()
+    if not normalized_level_prefix:
+        return 0
+    like_pattern = normalized_level_prefix + ".%"
+    with sqlite3.connect(path) as conn:
+        _create_table(conn)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {TABLE_NAME}
+            WHERE level_path = ? OR level_path LIKE ?
+            """,
+            (normalized_level_prefix, like_pattern),
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def delete_questions_by_level_prefix(path: Path, level_prefix: str) -> int:
+    if not path.exists():
+        return 0
+    normalized_level_prefix = str(level_prefix or "").strip()
+    if not normalized_level_prefix:
+        return 0
+    like_pattern = normalized_level_prefix + ".%"
+    with sqlite3.connect(path) as conn:
+        _create_table(conn)
+        cur = conn.execute(
+            f"""
+            DELETE FROM {TABLE_NAME}
+            WHERE level_path = ? OR level_path LIKE ?
+            """,
+            (normalized_level_prefix, like_pattern),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
 
 
 def initialize_db(path: Path) -> None:
@@ -191,6 +270,10 @@ def _create_table(conn: sqlite3.Connection) -> None:
             option_2 TEXT NOT NULL DEFAULT '',
             option_3 TEXT NOT NULL DEFAULT '',
             option_4 TEXT NOT NULL DEFAULT '',
+            choice_1 TEXT NOT NULL DEFAULT '',
+            choice_2 TEXT NOT NULL DEFAULT '',
+            choice_3 TEXT NOT NULL DEFAULT '',
+            choice_4 TEXT NOT NULL DEFAULT '',
             answer TEXT NOT NULL DEFAULT '',
             analysis TEXT NOT NULL DEFAULT '',
             question_type TEXT NOT NULL DEFAULT '',
@@ -205,6 +288,17 @@ def _create_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    existing_columns = {
+        str(row[1]).strip()
+        for row in conn.execute(f"PRAGMA table_info({TABLE_NAME})").fetchall()
+        if len(row) > 1 and str(row[1]).strip()
+    }
+    for column_name in ("choice_1", "choice_2", "choice_3", "choice_4"):
+        if column_name in existing_columns:
+            continue
+        conn.execute(
+            f"ALTER TABLE {TABLE_NAME} ADD COLUMN {column_name} TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRecord]) -> None:
@@ -216,6 +310,10 @@ def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRe
             q.option_2,
             q.option_3,
             q.option_4,
+            q.choice_1,
+            q.choice_2,
+            q.choice_3,
+            q.choice_4,
             q.answer,
             q.analysis,
             q.question_type,
@@ -241,6 +339,10 @@ def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRe
             option_2,
             option_3,
             option_4,
+            choice_1,
+            choice_2,
+            choice_3,
+            choice_4,
             answer,
             analysis,
             question_type,
@@ -252,7 +354,7 @@ def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRe
             abilities,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -266,15 +368,19 @@ def _row_to_record(row: tuple[object, ...]) -> DbQuestionRecord:
         option_2=str(row[3] or ""),
         option_3=str(row[4] or ""),
         option_4=str(row[5] or ""),
-        answer=str(row[6] or ""),
-        analysis=str(row[7] or ""),
-        question_type=str(row[8] or ""),
-        textbook_version=str(row[9] or ""),
-        source_filename=str(row[10] or ""),
-        level_path=str(row[11] or ""),
-        difficulty_score=int(row[12]) if row[12] is not None else None,
-        knowledge_points=str(row[13] or ""),
-        abilities=str(row[14] or ""),
-        created_at=str(row[15] or ""),
-        updated_at=str(row[16] or ""),
+        choice_1=str(row[6] or ""),
+        choice_2=str(row[7] or ""),
+        choice_3=str(row[8] or ""),
+        choice_4=str(row[9] or ""),
+        answer=str(row[10] or ""),
+        analysis=str(row[11] or ""),
+        question_type=str(row[12] or ""),
+        textbook_version=str(row[13] or ""),
+        source_filename=str(row[14] or ""),
+        level_path=str(row[15] or ""),
+        difficulty_score=int(row[16]) if row[16] is not None else None,
+        knowledge_points=str(row[17] or ""),
+        abilities=str(row[18] or ""),
+        created_at=str(row[19] or ""),
+        updated_at=str(row[20] or ""),
     )

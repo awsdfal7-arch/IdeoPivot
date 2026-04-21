@@ -305,6 +305,11 @@ def _fill_missing_explanations(
                 options=q.options,
                 answer=q.answer,
                 analysis=analysis,
+                question_type=q.question_type,
+                choice_1=q.choice_1,
+                choice_2=q.choice_2,
+                choice_3=q.choice_3,
+                choice_4=q.choice_4,
             )
             _emit_progress(
                 idx=idx,
@@ -357,6 +362,11 @@ def _fill_missing_explanations(
                 options=q.options,
                 answer=q.answer,
                 analysis=analysis,
+                question_type=q.question_type,
+                choice_1=q.choice_1,
+                choice_2=q.choice_2,
+                choice_3=q.choice_3,
+                choice_4=q.choice_4,
             )
             completed += 1
             _emit_progress(

@@ -63,6 +63,7 @@ class ReviewPage(QWizardPage):
     def _save(self) -> None:
         questions: list[Question] = []
         for r in range(self._table.rowCount()):
+            original = self._state.draft_questions[r] if r < len(self._state.draft_questions) else None
             number = self._get_item_text(r, 0).strip()
             stem = self._get_item_text(r, 1).strip()
             options = self._get_item_text(r, 2).strip()
@@ -77,6 +78,11 @@ class ReviewPage(QWizardPage):
                     options=options,
                     answer=answer,
                     analysis=analysis,
+                    question_type=original.question_type if original is not None else "",
+                    choice_1=original.choice_1 if original is not None else "",
+                    choice_2=original.choice_2 if original is not None else "",
+                    choice_3=original.choice_3 if original is not None else "",
+                    choice_4=original.choice_4 if original is not None else "",
                 )
             )
 
