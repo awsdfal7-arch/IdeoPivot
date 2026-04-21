@@ -46,7 +46,6 @@ class WizardState:
     draft_questions: list[Question] = field(default_factory=list)
     start_mode: str = "wizard"
     project_name_is_placeholder: bool = False
-    input_mode: str = "ai"
     batch_source_files: Optional[list[Path]] = None
     batch_source_files_text: str = ""
     ai_source_files: Optional[list[Path]] = None
@@ -55,7 +54,6 @@ class WizardState:
     ai_import_level_path: str = ""
     dedupe_hits: Optional[list[DedupeHit]] = None
     dedupe_enabled: bool = True
-    dedupe_folder: Optional[Path] = None
     dedupe_threshold: float = 0.85
     default_repo_parent_dir_text: str = field(default_factory=lambda: str(default_repo_parent_dir()))
     analysis_enabled: bool = True

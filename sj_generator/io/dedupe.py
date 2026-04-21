@@ -9,6 +9,7 @@ import jieba
 
 from sj_generator.models import Question
 from sj_generator.io.excel_repo import load_questions
+from sj_generator.io.sqlite_repo import load_all_questions
 
 
 _WS_RE = re.compile(r"\s+")
@@ -25,6 +26,7 @@ class DedupeHit:
     right_number: str
     right_stem: str
     similarity: float
+    right_level_path: str = ""
 
 
 def list_xlsx_in_folder(folder: Path) -> list[Path]:
@@ -141,6 +143,53 @@ def dedupe_between_questions_and_repos(
                             similarity=sim,
                         )
                     )
+
+    hits.sort(key=lambda x: x.similarity, reverse=True)
+    if limit > 0:
+        hits = hits[:limit]
+    return hits
+
+
+def dedupe_between_questions_and_db(
+    *,
+    left_questions: list[Question],
+    left_file: Path,
+    db_path: Path,
+    threshold: float,
+    limit: int = 200,
+) -> list[DedupeHit]:
+    filtered_left_questions = [q for q in left_questions if q.stem.strip()]
+    db_questions = [q for q in load_all_questions(db_path) if q.stem.strip()]
+
+    corpus: list[str] = []
+    corpus.extend([q.stem for q in filtered_left_questions])
+    corpus.extend([q.stem for q in db_questions])
+
+    tfidf, norms = _build_tfidf(corpus)
+
+    left_count = len(filtered_left_questions)
+    left_vecs = tfidf[:left_count]
+    left_norms = norms[:left_count]
+    right_vecs = tfidf[left_count:]
+    right_norms = norms[left_count:]
+
+    hits: list[DedupeHit] = []
+    for li, lq in enumerate(filtered_left_questions):
+        for ri, rq in enumerate(db_questions):
+            sim = _cosine(left_vecs[li], left_norms[li], right_vecs[ri], right_norms[ri])
+            if sim >= threshold:
+                hits.append(
+                    DedupeHit(
+                        left_file=left_file,
+                        left_number=lq.number,
+                        left_stem=lq.stem,
+                        right_file=db_path,
+                        right_number=rq.id,
+                        right_stem=rq.stem,
+                        right_level_path=rq.level_path,
+                        similarity=sim,
+                    )
+                )
 
     hits.sort(key=lambda x: x.similarity, reverse=True)
     if limit > 0:

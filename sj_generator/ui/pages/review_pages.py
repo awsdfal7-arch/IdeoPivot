@@ -37,7 +37,7 @@ class ReviewPage(QWizardPage):
         btns.addWidget(save_btn)
         btns.addStretch(1)
 
-        hint = QLabel("双击单元格可编辑；本页保存仅更新当前草稿，最终会在导出页统一写入硬盘。")
+        hint = QLabel("双击单元格可编辑；本页保存仅更新当前草稿，后续流程会继续使用最新草稿。")
         hint.setWordWrap(True)
 
         layout = QVBoxLayout()

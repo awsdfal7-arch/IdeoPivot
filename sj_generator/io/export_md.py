@@ -74,7 +74,7 @@ def _normalize_numbers(questions: list[Question]) -> list[Question]:
     next_no = (max(used_numbers) + 1) if used_numbers else 1
     for q in questions:
         number = q.number.strip()
-        if not number:
+        if not number.isdigit():
             while next_no in used_numbers:
                 next_no += 1
             number = str(next_no)

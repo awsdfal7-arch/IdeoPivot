@@ -77,6 +77,37 @@ def load_questions_by_level_path(path: Path, level_path: str) -> list[DbQuestion
     return [_row_to_record(row) for row in rows]
 
 
+def load_all_questions(path: Path) -> list[DbQuestionRecord]:
+    if not path.exists():
+        return []
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                id,
+                stem,
+                option_1,
+                option_2,
+                option_3,
+                option_4,
+                answer,
+                analysis,
+                question_type,
+                textbook_version,
+                source_filename,
+                level_path,
+                difficulty_score,
+                knowledge_points,
+                abilities,
+                created_at,
+                updated_at
+            FROM {TABLE_NAME}
+            ORDER BY created_at ASC, id ASC
+            """
+        ).fetchall()
+    return [_row_to_record(row) for row in rows]
+
+
 def update_question(path: Path, question: DbQuestionRecord) -> None:
     if not path.exists():
         raise FileNotFoundError(path)

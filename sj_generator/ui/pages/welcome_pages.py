@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 from datetime import datetime
 from pathlib import Path
+import re
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -30,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from sj_generator.config import load_welcome_table_column_visibility, save_welcome_table_column_visibility
+from sj_generator.io.export_md import export_questions_to_markdown
 from sj_generator.io.excel_repo import load_questions
 from sj_generator.io.sqlite_repo import DbQuestionRecord, list_level_paths, load_questions_by_level_path, update_question
 from sj_generator.models import Question
@@ -80,6 +83,9 @@ class WelcomePage(QWizardPage):
         self._doc_import_action.triggered.connect(self._enter_main_flow)
         self._table_import_action = import_menu.addAction("从表格文件直接导入")
         self._table_import_action.triggered.connect(self._import_from_table_file)
+        export_menu = menu_bar.addMenu("导出")
+        self._export_md_action = export_menu.addAction("导出当前层级为 Markdown")
+        self._export_md_action.triggered.connect(self._export_current_level_to_markdown)
         view_menu = menu_bar.addMenu("视图")
         column_menu = view_menu.addMenu("表格列显示")
         settings_menu = menu_bar.addMenu("设置")
@@ -153,7 +159,6 @@ class WelcomePage(QWizardPage):
 
     def nextId(self) -> int:
         self._state.start_mode = "wizard"
-        self._state.input_mode = "ai"
         return PAGE_AI_SELECT
 
     def _enter_main_flow(self) -> None:
@@ -185,6 +190,44 @@ class WelcomePage(QWizardPage):
         self._state.draft_questions = list(questions)
         self._populate_questions_table(questions)
         QMessageBox.information(self, "导入完成", f"已从表格文件导入 {len(questions)} 道题。")
+
+    def _export_current_level_to_markdown(self) -> None:
+        if not self._current_db_records:
+            QMessageBox.warning(self, "无法导出", "当前层级没有可导出的题目。")
+            return
+
+        current = self._folder_tree.currentItem()
+        if current is None:
+            QMessageBox.warning(self, "无法导出", "请先选择要导出的层级。")
+            return
+
+        level_path = str(current.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        if not level_path:
+            QMessageBox.warning(self, "无法导出", "当前层级无效，无法导出。")
+            return
+
+        safe_level_name = self._sanitize_export_name(level_path)
+        suggested = str(self._db_path.parent / f"{safe_level_name}.md")
+        file_path, _ = QFileDialog.getSaveFileName(self, "导出 Markdown", suggested, "Markdown (*.md)")
+        if not file_path:
+            return
+
+        questions = [self._db_record_to_question(record) for record in self._current_db_records]
+        md_text = export_questions_to_markdown(
+            excel_file_name=level_path,
+            export_date=date.today(),
+            questions=questions,
+        )
+        md_path = Path(file_path)
+        try:
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(md_text, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"写入 Markdown 失败：{e}")
+            return
+
+        self._state.last_export_dir = md_path.parent
+        QMessageBox.information(self, "导出完成", f"已导出 Markdown：\n{md_path}")
 
     def _refresh_level_tree(self) -> None:
         self._folder_tree.clear()
@@ -332,6 +375,15 @@ class WelcomePage(QWizardPage):
             "updated_at": record.updated_at,
         }
 
+    def _db_record_to_question(self, record: DbQuestionRecord) -> Question:
+        return Question(
+            number=record.id,
+            stem=record.stem,
+            options=self._format_db_options(record),
+            answer=self._format_db_answer(record),
+            analysis=record.analysis,
+        )
+
     def _populate_row_by_values(self, row: int, values: dict[str, str]) -> None:
         for col, (key, _title, _visible) in enumerate(self._column_defs):
             alignment = Qt.AlignmentFlag.AlignCenter if key == "answer" else Qt.AlignmentFlag.AlignLeft
@@ -373,6 +425,11 @@ class WelcomePage(QWizardPage):
 
     def _format_stem_with_sequence(self, sequence: int, stem: str) -> str:
         return f"{sequence}. {stem or ''}".strip()
+
+    def _sanitize_export_name(self, name: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\\\|?*]+', "_", (name or "").strip())
+        cleaned = cleaned.strip(" .")
+        return cleaned or "导出结果"
 
     def _set_table_item(
         self,

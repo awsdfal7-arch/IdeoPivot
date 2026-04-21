@@ -37,7 +37,7 @@ from sj_generator.ui.state import (
     normalize_analysis_model_name,
     normalize_analysis_provider,
 )
-from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_EXPORT, PAGE_NAME
+from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_IMPORT_SUCCESS
 
 def _analysis_provider_label(provider: str) -> str:
     labels = {"deepseek": "DeepSeek", "kimi": "Kimi", "qwen": "千问"}
@@ -132,9 +132,7 @@ class AiAnalysisOptionPage(QWizardPage):
     def nextId(self) -> int:
         if self._state.analysis_enabled:
             return PAGE_AI_ANALYSIS
-        if self._state.input_mode == "manual" and self._state.project_name_is_placeholder:
-            return PAGE_NAME
-        return PAGE_EXPORT
+        return PAGE_IMPORT_SUCCESS
 
 
 class AiAnalysisPage(QWizardPage):
@@ -208,9 +206,7 @@ class AiAnalysisPage(QWizardPage):
             QTimer.singleShot(0, self._start_generation)
 
     def nextId(self) -> int:
-        if self._state.input_mode == "manual" and self._state.project_name_is_placeholder:
-            return PAGE_NAME
-        return PAGE_EXPORT
+        return PAGE_IMPORT_SUCCESS
 
     def isComplete(self) -> bool:
         return self._done and (not self._running)
