@@ -51,6 +51,7 @@ from sj_generator.ui.pages.analysis_pages import _commit_draft_questions_to_db
 from sj_generator.ui.state import AiSourceFileItem, WizardState, normalize_ai_concurrency
 from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_AI_IMPORT, PAGE_DEDUPE_RESULT, PAGE_IMPORT_SUCCESS
 from sj_generator.ui.pdf_preview import DocumentPdfWebView
+from sj_generator.ui.styles import rounded_panel_stylesheet
 
 
 def _sanitize_filename(name: str) -> str:
@@ -209,7 +210,7 @@ class AiSelectFilesPage(QWizardPage):
         preview_frame_layout.setContentsMargins(0, 0, 0, 0)
         preview_frame_layout.addWidget(self._preview_stack, 1)
         preview_frame = QWidget()
-        preview_frame.setStyleSheet("border: 1px solid black;")
+        preview_frame.setStyleSheet(rounded_panel_stylesheet(background="#ffffff"))
         preview_frame.setLayout(preview_frame_layout)
 
         right_layout = QVBoxLayout()
@@ -1100,98 +1101,3 @@ class _AiImportWorker(QObject):
 
     def _should_stop(self) -> bool:
         return self._stop
-
-
-class AiImportEditPage(QWizardPage):
-    def __init__(self, state: WizardState) -> None:
-        super().__init__()
-        self._state = state
-        self.setTitle("AI 编辑与确认")
-        self._status = QLabel("请确认题目后继续。")
-        self._status.setWordWrap(True)
-
-        self._table = QTableWidget()
-        self._table.setColumnCount(5)
-        self._table.setHorizontalHeaderLabels(["编号", "题目", "选项", "答案", "解析"])
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnHidden(0, True)
-        self._table.setColumnHidden(4, True)
-        self._table.setWordWrap(True)
-        self._table.setTextElideMode(Qt.TextElideMode.ElideNone)
-        self._table.setRowCount(0)
-        self._table.itemChanged.connect(self._on_item_changed)
-
-        self._delete_btn = QPushButton("删除选中行")
-        self._delete_btn.clicked.connect(self._delete_selected)
-
-        btns = QHBoxLayout()
-        btns.addWidget(self._delete_btn)
-        btns.addStretch(1)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self._status)
-        layout.addWidget(self._table)
-        layout.addLayout(btns)
-        self.setLayout(layout)
-
-    def initializePage(self) -> None:
-        self._table.setRowCount(0)
-        qs = self._state.ai_import_questions or []
-        for i, q in enumerate(qs, start=1):
-            r = self._table.rowCount()
-            self._table.setRowCount(r + 1)
-            self._table.setItem(r, 0, QTableWidgetItem(str(i)))
-            self._table.setItem(r, 1, QTableWidgetItem(q.stem or ""))
-            self._table.setItem(r, 2, QTableWidgetItem(q.options or ""))
-            self._table.setItem(r, 3, QTableWidgetItem(q.answer or ""))
-            self._table.setItem(r, 4, QTableWidgetItem(q.analysis or ""))
-            self._table.resizeRowToContents(r)
-        self._status.setText(f"当前可编辑题目：{self._table.rowCount()} 题")
-
-    def nextId(self) -> int:
-        return PAGE_AI_LEVEL_PATH
-
-    def validatePage(self) -> bool:
-        questions: list[Question] = []
-        for r in range(self._table.rowCount()):
-            original = self._state.ai_import_questions[r] if r < len(self._state.ai_import_questions or []) else None
-            number = self._table.item(r, 0).text().strip() if self._table.item(r, 0) else ""
-            stem = self._table.item(r, 1).text().strip() if self._table.item(r, 1) else ""
-            options = self._table.item(r, 2).text().strip() if self._table.item(r, 2) else ""
-            answer = self._table.item(r, 3).text().strip() if self._table.item(r, 3) else ""
-            analysis = self._table.item(r, 4).text().strip() if self._table.item(r, 4) else ""
-            if not any([number, stem, options, answer, analysis]):
-                continue
-            questions.append(
-                Question(
-                    number=number,
-                    stem=stem,
-                    options=options,
-                    answer=answer,
-                    analysis=analysis,
-                    question_type=original.question_type if original is not None else "",
-                    choice_1=original.choice_1 if original is not None else "",
-                    choice_2=original.choice_2 if original is not None else "",
-                    choice_3=original.choice_3 if original is not None else "",
-                    choice_4=original.choice_4 if original is not None else "",
-                )
-            )
-        if not questions:
-            QMessageBox.warning(self, "没有可写入内容", "没有可写入的题目。")
-            return False
-        self._state.draft_questions = questions
-        self._state.reset_db_import()
-        return True
-
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        self._table.resizeRowToContents(item.row())
-
-    def _delete_selected(self) -> None:
-        rows = sorted({i.row() for i in self._table.selectedIndexes()}, reverse=True)
-        if not rows:
-            return
-        for r in rows:
-            self._table.removeRow(r)
-        for r in range(self._table.rowCount()):
-            self._table.setItem(r, 0, QTableWidgetItem(str(r + 1)))
-        self._status.setText(f"当前可编辑题目：{self._table.rowCount()} 题")

@@ -4,18 +4,19 @@ from pathlib import Path
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QWizard
 
-from sj_generator.ui.import_flow_wizard import (
-    DEFAULT_WINDOW_HEIGHT,
-    DEFAULT_WINDOW_WIDTH,
-    QT_MAX_WINDOW_SIZE,
-    configure_import_flow_pages,
+from sj_generator.config import load_program_settings
+from sj_generator.ui.import_flow_wizard import DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, QT_MAX_WINDOW_SIZE
+from sj_generator.ui.state import (
+    WizardState,
+    normalize_ai_concurrency,
+    normalize_analysis_model_name,
+    normalize_analysis_provider,
+    normalize_default_repo_parent_dir_text,
+    normalize_export_convertible_multi_mode,
 )
-from sj_generator.ui.state import WizardState
-from sj_generator.ui.constants import *
-from sj_generator.ui.pages import (
-    IntroPage,
-    WelcomePage,
-)
+from sj_generator.ui.styles import APP_STYLESHEET
+from sj_generator.ui.constants import PAGE_INTRO, PAGE_WELCOME
+from sj_generator.ui.pages import IntroPage, WelcomePage
 
 
 class GeneratorWizard(QWizard):
@@ -38,9 +39,9 @@ class GeneratorWizard(QWizard):
         self.setButtonText(QWizard.WizardButton.FinishButton, "完成")
 
         self._state = WizardState()
+        self._apply_saved_program_settings()
         self.setPage(PAGE_INTRO, IntroPage())
         self.setPage(PAGE_WELCOME, WelcomePage(self._state))
-        configure_import_flow_pages(self, self._state)
         self._cache_and_hide_page_titles()
         self.setStartId(PAGE_INTRO)
         self.currentIdChanged.connect(self._update_window_title)
@@ -83,14 +84,23 @@ class GeneratorWizard(QWizard):
         self.setMinimumSize(0, 0)
         self.setMaximumSize(QT_MAX_WINDOW_SIZE, QT_MAX_WINDOW_SIZE)
 
-    def accept(self) -> None:
-        if not self._state.auto_close_after_finish:
-            return
-        super().accept()
-
+    def _apply_saved_program_settings(self) -> None:
+        data = load_program_settings()
+        self._state.default_repo_parent_dir_text = normalize_default_repo_parent_dir_text(
+            data.get("default_repo_parent_dir_text")
+        )
+        self._state.ai_concurrency = normalize_ai_concurrency(data.get("ai_concurrency"))
+        self._state.analysis_enabled = bool(data.get("analysis_enabled", self._state.analysis_enabled))
+        self._state.dedupe_enabled = bool(data.get("dedupe_enabled", self._state.dedupe_enabled))
+        self._state.analysis_provider = normalize_analysis_provider(data.get("analysis_provider"))
+        self._state.analysis_model_name = normalize_analysis_model_name(data.get("analysis_model_name"))
+        self._state.export_convertible_multi_mode = normalize_export_convertible_multi_mode(
+            data.get("export_convertible_multi_mode")
+        )
 
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLESHEET)
     icon_path = Path(__file__).resolve().parents[2] / "logo.png"
     if icon_path.exists():
         icon = QIcon(str(icon_path))

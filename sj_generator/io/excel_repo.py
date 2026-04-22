@@ -28,7 +28,7 @@ DB_TABLE_HEADERS = [
     "analysis",
     "question_type",
     "textbook_version",
-    "source_filename",
+    "source",
     "level_path",
     "difficulty_score",
     "knowledge_points",
@@ -129,7 +129,7 @@ def save_db_question_records(path: Path, records: list[DbQuestionRecord]) -> Non
                 record.analysis,
                 record.question_type,
                 record.textbook_version,
-                record.source_filename,
+                record.source,
                 record.level_path,
                 "" if record.difficulty_score is None else record.difficulty_score,
                 record.knowledge_points,
@@ -145,6 +145,8 @@ def load_db_question_records(path: Path) -> list[DbQuestionRecord]:
     wb = load_workbook(path)
     ws = wb[DB_TABLE_SHEET_NAME] if DB_TABLE_SHEET_NAME in wb.sheetnames else wb.active
     _, header_map = _get_header_map(ws)
+    if "source" not in header_map and "source_filename" in header_map:
+        header_map["source"] = header_map["source_filename"]
     _ensure_required_db_table_headers(header_map)
 
     records: list[DbQuestionRecord] = []
@@ -175,7 +177,7 @@ def load_db_question_records(path: Path) -> list[DbQuestionRecord]:
                 analysis=values["analysis"],
                 question_type=values["question_type"],
                 textbook_version=values["textbook_version"],
-                source_filename=values["source_filename"],
+                source=values["source"],
                 level_path=values["level_path"],
                 difficulty_score=difficulty_score,
                 knowledge_points=values["knowledge_points"],

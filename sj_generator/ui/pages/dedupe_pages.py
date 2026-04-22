@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
-    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -26,7 +25,6 @@ from sj_generator.models import Question
 from sj_generator.ui.state import WizardState, library_db_path_from_repo_parent_dir_text
 from sj_generator.ui.constants import (
     PAGE_AI_ANALYSIS,
-    PAGE_DEDUPE_RESULT,
     PAGE_IMPORT_SUCCESS,
 )
 from sj_generator.ui.pages.analysis_pages import _commit_draft_questions_to_db
@@ -88,42 +86,6 @@ def _digits_to_circled(text: str) -> str:
         }.get(ch, ch)
         for ch in text
     )
-
-class DedupeOptionPage(QWizardPage):
-    def __init__(self, state: WizardState) -> None:
-        super().__init__()
-        self._state = state
-        self.setTitle("查重选项")
-
-        self._yes_radio = QRadioButton("运行库内查重")
-        self._no_radio = QRadioButton("跳过库内查重")
-        self._yes_radio.setChecked(True)
-
-        hint = QLabel("选择“运行库内查重”后，将直接使用当前总库执行查重，无需再指定路径。")
-        hint.setWordWrap(True)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self._yes_radio)
-        layout.addWidget(self._no_radio)
-        layout.addWidget(hint)
-        layout.addStretch(1)
-        self.setLayout(layout)
-
-    def initializePage(self) -> None:
-        if self._state.dedupe_enabled:
-            self._yes_radio.setChecked(True)
-        else:
-            self._no_radio.setChecked(True)
-
-    def validatePage(self) -> bool:
-        self._state.dedupe_enabled = self._yes_radio.isChecked()
-        if not self._state.dedupe_enabled:
-            self._state.dedupe_hits = None
-        return True
-
-    def nextId(self) -> int:
-        return PAGE_DEDUPE_RESULT if self._state.dedupe_enabled else PAGE_AI_ANALYSIS_OPTION
-
 
 class DedupeResultPage(QWizardPage):
     def __init__(self, state: WizardState) -> None:

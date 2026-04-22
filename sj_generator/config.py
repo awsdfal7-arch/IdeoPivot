@@ -213,6 +213,26 @@ def save_welcome_table_column_visibility(visibility: dict[str, bool]) -> None:
     )
 
 
+def load_welcome_table_font_point_size() -> int | None:
+    data = _load_welcome_view_config()
+    raw = data.get("table_font_point_size")
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def save_welcome_table_font_point_size(point_size: int) -> None:
+    try:
+        value = int(point_size)
+    except Exception:
+        return
+    if value <= 0:
+        return
+    _save_welcome_view_config_values({"table_font_point_size": value})
+
+
 def load_welcome_tree_expanded_prefixes() -> list[str] | None:
     data = _load_welcome_view_config()
     raw = data.get("tree_expanded_prefixes")
@@ -233,6 +253,17 @@ def save_welcome_tree_expanded_prefixes(prefixes: list[str]) -> None:
         seen.add(text)
         normalized.append(text)
     _save_welcome_view_config_values({"tree_expanded_prefixes": normalized})
+
+
+def load_program_settings() -> dict:
+    data = _load_json_config_file(_program_settings_path())
+    return data if isinstance(data, dict) else {}
+
+
+def save_program_settings(settings: dict) -> None:
+    path = _program_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def to_qwen_llm_config(cfg: QwenConfig) -> LlmConfig:
@@ -303,6 +334,13 @@ def _welcome_view_config_path() -> Path:
     if env:
         return Path(env)
     return _default_config_dir() / "welcome_view.json"
+
+
+def _program_settings_path() -> Path:
+    env = os.getenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", "").strip()
+    if env:
+        return Path(env)
+    return _default_config_dir() / "program_settings.json"
 
 
 def _load_welcome_view_config() -> dict:

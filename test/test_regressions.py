@@ -5,6 +5,7 @@ import threading
 import time
 
 from openpyxl import Workbook, load_workbook
+from sj_generator.io.sqlite_repo import DbQuestionRecord, append_questions, delete_question_by_id, load_all_questions
 
 from sj_generator.ai import balance as balance_mod
 from sj_generator.ai import import_questions as iq
@@ -12,7 +13,7 @@ from sj_generator.ai.import_questions import ImportResult
 from sj_generator.ai.task_runner import run_tasks_in_parallel
 from sj_generator.io import batch_ai_import as batch_ai
 from sj_generator.io.batch_folderize import process_excel_to_folder_mode
-from sj_generator.io.export_md import _normalize_numbers
+from sj_generator.io.export_md import _normalize_numbers, export_questions_to_markdown
 from sj_generator.models import Question
 from sj_generator import config as cfg_mod
 from sj_generator.ui.compare_highlight import compare_highlight_model_styles
@@ -34,6 +35,62 @@ def test_normalize_numbers_fill_after_existing_max() -> None:
     ]
     normalized = _normalize_numbers(questions)
     assert [q.number for q in normalized] == ["5", "8", "7", "9"]
+
+
+def test_delete_question_by_id_removes_only_target_record(tmp_path) -> None:
+    db_path = tmp_path / "questions.db"
+    records = [
+        DbQuestionRecord(
+            id="q1",
+            stem="题目一",
+            option_1="甲",
+            option_2="乙",
+            option_3="丙",
+            option_4="丁",
+            choice_1="",
+            choice_2="",
+            choice_3="",
+            choice_4="",
+            answer="A",
+            analysis="解析一",
+            question_type="单选",
+            textbook_version="必修一",
+            source="资料一.docx",
+            level_path="1.1",
+            difficulty_score=None,
+            knowledge_points="",
+            abilities="",
+            created_at="2026-04-21 10:00:00",
+            updated_at="2026-04-21 10:00:00",
+        ),
+        DbQuestionRecord(
+            id="q2",
+            stem="题目二",
+            option_1="甲",
+            option_2="乙",
+            option_3="丙",
+            option_4="丁",
+            choice_1="",
+            choice_2="",
+            choice_3="",
+            choice_4="",
+            answer="B",
+            analysis="解析二",
+            question_type="单选",
+            textbook_version="必修一",
+            source="资料二.docx",
+            level_path="1.1",
+            difficulty_score=None,
+            knowledge_points="",
+            abilities="",
+            created_at="2026-04-21 10:01:00",
+            updated_at="2026-04-21 10:01:00",
+        ),
+    ]
+    append_questions(db_path, records)
+
+    assert delete_question_by_id(db_path, "q1") == 1
+    assert [record.id for record in load_all_questions(db_path)] == ["q2"]
 
 
 def test_get_question_n_with_fallback_maps_to_local_index(monkeypatch) -> None:
@@ -82,10 +139,45 @@ def test_config_path_defaults_to_appdata(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("SJ_GENERATOR_CONFIG_PATH", raising=False)
     monkeypatch.delenv("SJ_GENERATOR_KIMI_CONFIG_PATH", raising=False)
     monkeypatch.delenv("SJ_GENERATOR_QWEN_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", raising=False)
 
     assert cfg_mod._config_path() == tmp_path / "sj_generator" / "deepseek.json"
     assert cfg_mod._kimi_config_path() == tmp_path / "sj_generator" / "kimi.json"
     assert cfg_mod._qwen_config_path() == tmp_path / "sj_generator" / "qwen.json"
+    assert cfg_mod._program_settings_path() == tmp_path / "sj_generator" / "program_settings.json"
+
+
+def test_program_settings_persist_round_trip(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", raising=False)
+
+    cfg_mod.save_program_settings(
+        {
+            "default_repo_parent_dir_text": "C:/repo-root",
+            "ai_concurrency": 4,
+            "analysis_enabled": False,
+            "dedupe_enabled": True,
+            "analysis_provider": "kimi",
+            "analysis_model_name": "kimi-k2-turbo-preview",
+            "export_convertible_multi_mode": "as_multi",
+        }
+    )
+
+    assert cfg_mod.load_program_settings() == {
+        "default_repo_parent_dir_text": "C:/repo-root",
+        "ai_concurrency": 4,
+        "analysis_enabled": False,
+        "dedupe_enabled": True,
+        "analysis_provider": "kimi",
+        "analysis_model_name": "kimi-k2-turbo-preview",
+        "export_convertible_multi_mode": "as_multi",
+    }
+
+
+def test_welcome_table_font_point_size_persists_round_trip(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    cfg_mod.save_welcome_table_font_point_size(15)
+    assert cfg_mod.load_welcome_table_font_point_size() == 15
 
 
 def test_deepseek_analysis_model_defaults_and_persists(monkeypatch, tmp_path) -> None:
@@ -239,6 +331,44 @@ def test_compare_highlight_uses_same_fingerprint_semantics_as_verdict() -> None:
         round_matched_count=2,
     )
     assert got == {"qwen": "red"}
+
+
+def test_normalize_question_obj_for_view_splits_legacy_options_into_option_fields() -> None:
+    got = iq._normalize_question_obj_for_view(
+        {
+            "question_type": "单选",
+            "number": "2",
+            "stem": "题目二",
+            "options": "A.甲 B.乙 C.丙 D.丁",
+            "answer": "D",
+        }
+    )
+    assert "options" not in got
+    assert got["option_1"] == "甲"
+    assert got["option_2"] == "乙"
+    assert got["option_3"] == "丙"
+    assert got["option_4"] == "丁"
+
+
+def test_fingerprint_question_obj_treats_option_fields_same_as_legacy_options() -> None:
+    legacy = {
+        "question_type": "单选",
+        "number": "2",
+        "stem": "题目二",
+        "options": "A.甲\nB.乙\nC.丙\nD.丁",
+        "answer": "D",
+    }
+    structured = {
+        "question_type": "单选",
+        "number": "2",
+        "stem": "题目二",
+        "option_1": "甲",
+        "option_2": "乙",
+        "option_3": "丙",
+        "option_4": "丁",
+        "answer": "D",
+    }
+    assert iq._fingerprint_question_obj(legacy) == iq._fingerprint_question_obj(structured)
 
 
 def test_build_deepseek_balance_url_supports_common_base_url_forms() -> None:
@@ -416,6 +546,69 @@ def test_process_source_files_to_folders_outputs_xlsx_and_md(monkeypatch, tmp_pa
     assert any(event.stage == "reading" for event in progress_events)
     assert any(event.stage == "generating_analysis" for event in progress_events)
     assert any(event.stage == "done" and event.question_count == 1 for event in progress_events)
+
+
+def test_export_markdown_removes_extra_blank_line_for_convertible_multi_options() -> None:
+    md = export_questions_to_markdown(
+        excel_file_name="示例题库",
+        export_date=date(2026, 3, 31),
+        questions=[
+            Question(
+                number="1",
+                stem="题目一",
+                options="①. 甲\n②. 乙\n③. 丙\n④. 丁\n\nA. ①③\nB. ①②\nC. ②④\nD. ①④",
+                answer="B",
+                analysis="解析一",
+            )
+        ],
+    )
+    assert "④. 丁\n\nA. ①③" not in md
+    assert "④. 丁\nA. ①③  B. ①②  C. ②④  D. ①④" in md
+
+
+def test_export_markdown_orders_convertible_multi_statements_before_combo_lines() -> None:
+    md = export_questions_to_markdown(
+        excel_file_name="示例题库",
+        export_date=date(2026, 3, 31),
+        questions=[
+            Question(
+                number="1",
+                stem="题目一",
+                options="A. ①③\n①. 甲\nB. ①②\n②. 乙\n③. 丙\nD. ①④\n④. 丁\nC. ②④",
+                answer="B",
+                analysis="解析一",
+            )
+        ],
+    )
+    combo_line = "A. ①③  B. ①②  C. ②④  D. ①④"
+    assert combo_line in md
+    assert md.index("①. 甲") < md.index(combo_line)
+    assert md.index("②. 乙") < md.index(combo_line)
+    assert md.index("③. 丙") < md.index(combo_line)
+    assert md.index("④. 丁") < md.index(combo_line)
+
+
+def test_export_markdown_supports_convertible_multi_as_multi_mode() -> None:
+    md = export_questions_to_markdown(
+        excel_file_name="示例题库",
+        export_date=date(2026, 3, 31),
+        questions=[
+            Question(
+                number="1",
+                stem="题目一",
+                options="①. 甲\n②. 乙\n③. 丙\n④. 丁\nA. ①③\nB. ①②\nC. ②④\nD. ①④",
+                answer="B",
+                analysis="解析一",
+            )
+        ],
+        convertible_multi_mode="as_multi",
+    )
+    assert "①. 甲" in md
+    assert "②. 乙" in md
+    assert "③. 丙" in md
+    assert "④. 丁" in md
+    assert "A. ①③" not in md
+    assert "B. ①②" not in md
 
 
 def test_process_source_files_to_folders_supports_controlled_concurrency(monkeypatch, tmp_path) -> None:

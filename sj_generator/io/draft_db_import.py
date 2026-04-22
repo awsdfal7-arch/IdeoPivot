@@ -67,12 +67,12 @@ def draft_questions_to_db_records(
     if not questions:
         raise ValueError("没有可写入数据库的题目。")
 
-    source_filename = _resolve_source_filename(source_files)
+    source = _resolve_source(source_files)
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return [
         _convert_question(
             question,
-            source_filename=source_filename,
+            source=source,
             level_path=normalized_level_path,
             now_text=now_text,
         )
@@ -80,7 +80,7 @@ def draft_questions_to_db_records(
     ]
 
 
-def _resolve_source_filename(source_files: Iterable[Path] | None) -> str:
+def _resolve_source(source_files: Iterable[Path] | None) -> str:
     if source_files is None:
         return ""
     names: list[str] = []
@@ -101,7 +101,7 @@ def _resolve_source_filename(source_files: Iterable[Path] | None) -> str:
 def _convert_question(
     question: Question,
     *,
-    source_filename: str,
+    source: str,
     level_path: str,
     now_text: str,
 ) -> DbQuestionRecord:
@@ -125,7 +125,7 @@ def _convert_question(
         analysis=(question.analysis or "").strip(),
         question_type=question_type,
         textbook_version="",
-        source_filename=source_filename,
+        source=source,
         level_path=level_path,
         difficulty_score=None,
         knowledge_points="",

@@ -15,6 +15,7 @@ def export_questions_to_markdown(
     excel_file_name: str,
     export_date: date,
     questions: list[Question],
+    convertible_multi_mode: str = "keep_combo",
 ) -> str:
     lines: list[str] = []
 
@@ -28,7 +29,7 @@ def export_questions_to_markdown(
     normalized = _normalize_numbers(questions)
     for q in normalized:
         stem_lines = _split_lines(_normalize_breaks(q.stem))
-        options_block = _format_options_block(q.options)
+        options_block = _format_options_block(q.options, convertible_multi_mode=convertible_multi_mode)
         if options_block:
             stem_lines = _ensure_choice_blank(stem_lines)
 
@@ -92,7 +93,7 @@ def _normalize_numbers(questions: list[Question]) -> list[Question]:
     return result
 
 
-def _format_options_block(options: str) -> list[str]:
+def _format_options_block(options: str, *, convertible_multi_mode: str = "keep_combo") -> list[str]:
     options = _normalize_breaks(options)
     parsed = try_parse_options_json(options)
     if parsed is not None:
@@ -101,20 +102,27 @@ def _format_options_block(options: str) -> list[str]:
 
     options = _force_newline_before_markers(options)
     lines = _split_lines(options)
-    while lines and lines[0] == "":
-        lines.pop(0)
-    while lines and lines[-1] == "":
-        lines.pop()
-    return lines
+    lines = [line for line in lines if line.strip()]
+    return _normalize_convertible_multi_option_lines(lines, convertible_multi_mode=convertible_multi_mode)
 
 
 def _force_newline_before_markers(text: str) -> str:
     if not text.strip():
         return ""
 
-    letter = r"(?<!\n)(?=(?:[A-Z][\.、]))"
-    circled = r"(?<!\n)(?=(?:[\u2460-\u2473]))"
-    return re.sub(letter, "\n", re.sub(circled, "\n", text))
+    letter = r"(?<!^)(?=(?:[A-Z][\.、]))"
+    circled = r"(?<!^)(?=(?:[\u2460-\u2473]))"
+    out_lines: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        if not line:
+            out_lines.append("")
+            continue
+        line = re.sub(letter, "\n", line)
+        if not re.match(r"^\s*[A-Z][\.、．:：]", line):
+            line = re.sub(circled, "\n", line)
+        out_lines.extend(line.split("\n"))
+    return "\n".join(out_lines)
 
 
 def _normalize_breaks(text: str) -> str:
@@ -126,6 +134,40 @@ def _split_lines(text: str) -> list[str]:
     if not text:
         return []
     return [line.rstrip() for line in text.split("\n")]
+
+
+def _normalize_convertible_multi_option_lines(
+    lines: list[str],
+    *,
+    convertible_multi_mode: str = "keep_combo",
+) -> list[str]:
+    if not lines:
+        return []
+    statement_lines = [line for line in lines if _is_circled_option_line(line)]
+    combo_lines = sorted(
+        [line for line in lines if _is_combo_mapping_line(line)],
+        key=_combo_line_sort_key,
+    )
+    if statement_lines and combo_lines:
+        other_lines = [line for line in lines if line not in statement_lines and line not in combo_lines]
+        if convertible_multi_mode == "as_multi":
+            return statement_lines + other_lines
+        combo_line = "  ".join(line.strip() for line in combo_lines if line.strip())
+        return statement_lines + other_lines + ([combo_line] if combo_line else [])
+    return lines
+
+
+def _is_circled_option_line(text: str) -> bool:
+    return bool(re.match(r"^\s*[\u2460-\u2473][\.、．:：]?\s*", text))
+
+
+def _is_combo_mapping_line(text: str) -> bool:
+    return bool(re.match(r"^\s*[A-D][\.、．:：]\s*[\u2460-\u2473]+", text))
+
+
+def _combo_line_sort_key(text: str) -> str:
+    m = re.match(r"^\s*([A-D])", text)
+    return m.group(1) if m else text
 
 
 def _option_key_sort_key(key: str) -> tuple[int, str]:

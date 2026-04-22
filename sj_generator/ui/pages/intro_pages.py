@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from sj_generator.ui.constants import PAGE_WELCOME
 from sj_generator.paths import app_paths
+from sj_generator.ui.styles import rounded_panel_stylesheet
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 
@@ -80,7 +81,7 @@ class IntroPage(QWizardPage):
         self._photo_label.setScaledContents(False)
         self._photo_label.setMinimumSize(300, 380)
         self._photo_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._photo_label.setStyleSheet("border: 1px solid #000000; background: #f7f7f7;")
+        self._photo_label.setStyleSheet(rounded_panel_stylesheet(background="#f7f7f7"))
         self._apply_photo()
 
         quote_label = QLabel()
@@ -103,17 +104,19 @@ class IntroPage(QWizardPage):
         username_edit = QLineEdit()
         username_edit.setPlaceholderText("请输入用户名")
         username_edit.setMinimumHeight(36)
+        username_edit.setStyleSheet("border: 1px solid #000000; border-radius: 0px; background: #ffffff;")
 
         password_edit = QLineEdit()
         password_edit.setPlaceholderText("请输入密码")
         password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         password_edit.setMinimumHeight(36)
+        password_edit.setStyleSheet("border: 1px solid #000000; border-radius: 0px; background: #ffffff;")
         password_edit.returnPressed.connect(self._go_next)
 
         btn_style = (
             "QPushButton {"
             "font-size: 16px; font-weight: 600; padding: 6px 18px; "
-            "background: #ffffff; border: 1px solid #000000;"
+            "background: #ffffff; border: 1px solid #000000; border-radius: 0px;"
             "}"
             "QPushButton:hover {"
             "background: #f2f2f2;"
@@ -152,7 +155,7 @@ class IntroPage(QWizardPage):
         login_form.addRow(password_label, password_edit)
 
         self._login_panel = QFrame()
-        self._login_panel.setStyleSheet("QFrame { border: 1px solid #000000; background: #fafafa; }")
+        self._login_panel.setStyleSheet(rounded_panel_stylesheet())
         self._login_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._login_layout = QVBoxLayout()
         self._login_layout.setContentsMargins(20, 18, 20, 18)
@@ -176,7 +179,7 @@ class IntroPage(QWizardPage):
         photo_layout.addWidget(self._photo_label, 1)
 
         quote_panel = QFrame()
-        quote_panel.setStyleSheet("QFrame { border: 1px solid #000000; background: #fafafa; }")
+        quote_panel.setStyleSheet(rounded_panel_stylesheet())
         quote_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         quote_layout = QVBoxLayout()
         quote_layout.setContentsMargins(0, 0, 0, 0)

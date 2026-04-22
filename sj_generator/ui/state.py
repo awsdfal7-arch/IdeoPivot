@@ -7,6 +7,7 @@ from sj_generator.models import Question
 
 AI_CONCURRENCY_OPTIONS = (1, 2, 3, 4, 5)
 ANALYSIS_PROVIDER_OPTIONS = ("deepseek", "kimi", "qwen")
+EXPORT_CONVERTIBLE_MULTI_MODE_OPTIONS = ("keep_combo", "as_multi")
 DEFAULT_ANALYSIS_MODEL_NAME = "deepseek-reasoner"
 DEFAULT_REPO_PARENT_DIR_NAME = "思政题库"
 DEFAULT_LIBRARY_DB_FILE_NAME = "思政题库.db"
@@ -28,6 +29,11 @@ def normalize_analysis_provider(value: str | None) -> str:
 def normalize_analysis_model_name(value: str | None) -> str:
     model_name = (value or "").strip()
     return model_name or DEFAULT_ANALYSIS_MODEL_NAME
+
+
+def normalize_export_convertible_multi_mode(value: str | None) -> str:
+    mode = (value or "").strip().lower()
+    return mode if mode in EXPORT_CONVERTIBLE_MULTI_MODE_OPTIONS else "keep_combo"
 
 
 def default_repo_parent_dir() -> Path:
@@ -76,8 +82,8 @@ class WizardState:
     analysis_include_common_mistakes: bool = True
     analysis_provider: str = "deepseek"
     analysis_model_name: str = DEFAULT_ANALYSIS_MODEL_NAME
+    export_convertible_multi_mode: str = "keep_combo"
     ai_concurrency: int = 3
-    auto_close_after_finish: bool = True
     db_import_completed: bool = False
     db_import_count: int = 0
     db_import_error: str = ""

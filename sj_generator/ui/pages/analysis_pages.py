@@ -2,15 +2,12 @@ import time
 from pathlib import Path
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QProgressBar,
-    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -41,6 +38,15 @@ from sj_generator.ui.state import (
 )
 from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_IMPORT_SUCCESS
 
+COL_NUMBER = 0
+COL_STEM = 1
+COL_OPTIONS = 2
+COL_ANSWER = 3
+COL_CHOICE_SUMMARY = 4
+COL_ANALYSIS = 5
+COL_ELAPSED = 6
+
+
 def _analysis_provider_label(provider: str) -> str:
     labels = {"deepseek": "DeepSeek", "kimi": "Kimi", "qwen": "千问"}
     return labels.get(normalize_analysis_provider(provider), "DeepSeek")
@@ -48,6 +54,37 @@ def _analysis_provider_label(provider: str) -> str:
 
 def _analysis_target_text(provider: str, model_name: str) -> str:
     return f"{_analysis_provider_label(provider)} / {normalize_analysis_model_name(model_name)}"
+
+
+def _digits_to_circled(text: str) -> str:
+    return "".join(
+        {
+            "1": "①",
+            "2": "②",
+            "3": "③",
+            "4": "④",
+            "5": "⑤",
+            "6": "⑥",
+            "7": "⑦",
+            "8": "⑧",
+            "9": "⑨",
+        }.get(ch, ch)
+        for ch in text
+    )
+
+
+def _format_choice_summary(question: Question) -> str:
+    lines = [
+        f"{letter}：{_digits_to_circled(value.strip())}"
+        for letter, value in (
+            ("A", question.choice_1),
+            ("B", question.choice_2),
+            ("C", question.choice_3),
+            ("D", question.choice_4),
+        )
+        if value.strip()
+    ]
+    return "\n".join(lines)
 
 
 def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool:
@@ -80,95 +117,6 @@ def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool
     return True
 
 
-class AiAnalysisOptionPage(QWizardPage):
-    def __init__(self, state: WizardState) -> None:
-        super().__init__()
-        self._state = state
-        self.setTitle("解析选项")
-
-        self._yes_radio = QRadioButton("生成解析")
-        self._no_radio = QRadioButton("跳过解析生成")
-        self._yes_radio.setChecked(True)
-
-        root_dir = Path(__file__).resolve().parents[3]
-        ref_dir = app_paths(root_dir).reference_resource_dir
-        ref_mds = sorted([p for p in ref_dir.glob("*.md")] if ref_dir.exists() else [], key=lambda p: p.name)
-        has_reference_mds = len(ref_mds) > 0
-        self._ref_folder_checkbox = QCheckBox("自动参考 reference/resource 文件夹内所有 md（如果存在）")
-        self._ref_folder_checkbox.setChecked(has_reference_mds)
-        self._ref_folder_checkbox.setEnabled(has_reference_mds)
-
-        has_mistakes = common_mistakes_md_path(root_dir).exists()
-        self._mistakes_checkbox = QCheckBox("使用常见错题归因参考（如果存在）")
-        self._mistakes_checkbox.setChecked(has_mistakes)
-        self._mistakes_checkbox.setEnabled(has_mistakes)
-
-        hint = QLabel("选择“生成解析”后，将在下一步自动生成缺失解析并写回题库。")
-        hint.setWordWrap(True)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self._yes_radio)
-        layout.addWidget(self._no_radio)
-        layout.addWidget(self._ref_folder_checkbox)
-        layout.addWidget(self._mistakes_checkbox)
-        layout.addWidget(hint)
-        layout.addStretch(1)
-        self.setLayout(layout)
-
-    def initializePage(self) -> None:
-        if self._state.analysis_enabled:
-            self._yes_radio.setChecked(True)
-        else:
-            self._no_radio.setChecked(True)
-        root_dir = Path(__file__).resolve().parents[3]
-        ref_dir = app_paths(root_dir).reference_resource_dir
-        has_reference_mds = any(ref_dir.glob("*.md")) if ref_dir.exists() else False
-        self._ref_folder_checkbox.setEnabled(has_reference_mds)
-        if not has_reference_mds:
-            self._ref_folder_checkbox.setChecked(False)
-        else:
-            self._ref_folder_checkbox.setChecked(self._state.analysis_use_reference_folder)
-        has_mistakes = common_mistakes_md_path(root_dir).exists()
-        self._mistakes_checkbox.setEnabled(has_mistakes)
-        if not has_mistakes:
-            self._mistakes_checkbox.setChecked(False)
-        else:
-            self._mistakes_checkbox.setChecked(self._state.analysis_include_common_mistakes)
-        self._sync_enabled_state()
-        self._yes_radio.toggled.connect(self._sync_enabled_state)
-
-    def _sync_enabled_state(self) -> None:
-        enabled = self._yes_radio.isChecked()
-        root_dir = Path(__file__).resolve().parents[3]
-        ref_dir = app_paths(root_dir).reference_resource_dir
-        has_reference_mds = any(ref_dir.glob("*.md")) if ref_dir.exists() else False
-        self._ref_folder_checkbox.setEnabled(enabled and has_reference_mds)
-        root_dir = Path(__file__).resolve().parents[3]
-        has_mistakes = common_mistakes_md_path(root_dir).exists()
-        self._mistakes_checkbox.setEnabled(enabled and has_mistakes)
-
-    def validatePage(self) -> bool:
-        self._state.analysis_enabled = self._yes_radio.isChecked()
-        root_dir = Path(__file__).resolve().parents[3]
-        ref_dir = app_paths(root_dir).reference_resource_dir
-        has_reference_mds = any(ref_dir.glob("*.md")) if ref_dir.exists() else False
-        self._state.analysis_use_reference_folder = (
-            self._ref_folder_checkbox.isChecked() and has_reference_mds and self._state.analysis_enabled
-        )
-        has_mistakes = common_mistakes_md_path(root_dir).exists()
-        self._state.analysis_include_common_mistakes = (
-            self._mistakes_checkbox.isChecked() and has_mistakes and self._state.analysis_enabled
-        )
-        if not self._state.analysis_enabled:
-            return _commit_draft_questions_to_db(self, self._state)
-        return True
-
-    def nextId(self) -> int:
-        if self._state.analysis_enabled:
-            return PAGE_AI_ANALYSIS
-        return PAGE_IMPORT_SUCCESS
-
-
 class AiAnalysisPage(QWizardPage):
     def __init__(self, state: WizardState) -> None:
         super().__init__()
@@ -181,11 +129,11 @@ class AiAnalysisPage(QWizardPage):
         self._current_label.setWordWrap(True)
 
         self._table = QTableWidget()
-        self._table.setColumnCount(6)
-        self._table.setHorizontalHeaderLabels(["编号", "题目", "选项", "答案", "解析", "解析用时"])
+        self._table.setColumnCount(7)
+        self._table.setHorizontalHeaderLabels(["编号", "题目", "选项", "答案", "组合属性", "解析", "解析用时"])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._table.setRowCount(0)
-        self._table.setColumnHidden(0, True)
+        self._table.setColumnHidden(COL_NUMBER, True)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
@@ -258,26 +206,32 @@ class AiAnalysisPage(QWizardPage):
         questions = list(self._state.draft_questions)
         self._table.setRowCount(len(questions))
         for r, q in enumerate(questions):
-            self._table.setItem(r, 0, QTableWidgetItem(q.number or ""))
-            self._table.setItem(r, 1, QTableWidgetItem(q.stem or ""))
-            self._table.setItem(r, 2, QTableWidgetItem(q.options or ""))
-            self._table.setItem(r, 3, QTableWidgetItem(q.answer or ""))
-            self._table.setItem(r, 4, QTableWidgetItem(q.analysis or ""))
-            self._table.setItem(r, 5, QTableWidgetItem(""))
+            self._table.setItem(r, COL_NUMBER, QTableWidgetItem(q.number or ""))
+            self._table.setItem(r, COL_STEM, QTableWidgetItem(q.stem or ""))
+            self._table.setItem(r, COL_OPTIONS, QTableWidgetItem(q.options or ""))
+            self._table.setItem(r, COL_ANSWER, QTableWidgetItem(q.answer or ""))
+            self._table.setItem(r, COL_CHOICE_SUMMARY, QTableWidgetItem(_format_choice_summary(q)))
+            self._table.setItem(r, COL_ANALYSIS, QTableWidgetItem(q.analysis or ""))
+            self._table.setItem(r, COL_ELAPSED, QTableWidgetItem(""))
 
     def _build_inputs_for_row(self, row: int) -> tuple[str, str]:
-        stem = self._table.item(row, 1).text() if self._table.item(row, 1) else ""
-        options = self._table.item(row, 2).text() if self._table.item(row, 2) else ""
-        answer = self._table.item(row, 3).text() if self._table.item(row, 3) else ""
+        stem = self._table.item(row, COL_STEM).text() if self._table.item(row, COL_STEM) else ""
+        options = self._table.item(row, COL_OPTIONS).text() if self._table.item(row, COL_OPTIONS) else ""
+        answer = self._table.item(row, COL_ANSWER).text() if self._table.item(row, COL_ANSWER) else ""
+        choice_summary = (
+            self._table.item(row, COL_CHOICE_SUMMARY).text().strip() if self._table.item(row, COL_CHOICE_SUMMARY) else ""
+        )
         question_text = stem.strip()
         if options.strip():
             question_text = (question_text + "\n" + options.strip()).strip()
+        if choice_summary:
+            question_text = (question_text + "\n\n" + choice_summary).strip()
         return question_text, answer.strip()
 
     def _collect_tasks(self) -> list[tuple[int, str, str]]:
         tasks: list[tuple[int, str, str]] = []
         for r in range(self._table.rowCount()):
-            analysis = self._table.item(r, 4).text().strip() if self._table.item(r, 4) else ""
+            analysis = self._table.item(r, COL_ANALYSIS).text().strip() if self._table.item(r, COL_ANALYSIS) else ""
             if analysis:
                 continue
             qtext, atext = self._build_inputs_for_row(r)
@@ -438,13 +392,15 @@ class AiAnalysisPage(QWizardPage):
         self._current_label.setText(f"选择题 {current}/{total} 题已发起解析（模型：{target_text}，并发 {workers} 路）")
 
     def _on_batch_row_done(self, row: int, text: str, elapsed_s: float) -> None:
-        existing = self._table.item(row, 4).text().strip() if self._table.item(row, 4) else ""
+        existing = (
+            self._table.item(row, COL_ANALYSIS).text().strip() if self._table.item(row, COL_ANALYSIS) else ""
+        )
         if existing:
             return
         if row in self._failed_rows:
             self._failed_rows.remove(row)
-        self._table.setItem(row, 4, QTableWidgetItem(text))
-        self._table.setItem(row, 5, QTableWidgetItem(f"{elapsed_s:.1f}s"))
+        self._table.setItem(row, COL_ANALYSIS, QTableWidgetItem(text))
+        self._table.setItem(row, COL_ELAPSED, QTableWidgetItem(f"{elapsed_s:.1f}s"))
 
     def _on_batch_row_failed(self, row: int, msg: str) -> None:
         self._failed_rows.add(row)
@@ -458,11 +414,13 @@ class AiAnalysisPage(QWizardPage):
         questions: list[Question] = []
         for r in range(self._table.rowCount()):
             original = self._state.draft_questions[r] if r < len(self._state.draft_questions) else None
-            number = self._table.item(r, 0).text().strip() if self._table.item(r, 0) else ""
-            stem = self._table.item(r, 1).text().strip() if self._table.item(r, 1) else ""
-            options = self._table.item(r, 2).text().strip() if self._table.item(r, 2) else ""
-            answer = self._table.item(r, 3).text().strip() if self._table.item(r, 3) else ""
-            analysis = self._table.item(r, 4).text().strip() if self._table.item(r, 4) else ""
+            number = self._table.item(r, COL_NUMBER).text().strip() if self._table.item(r, COL_NUMBER) else ""
+            stem = self._table.item(r, COL_STEM).text().strip() if self._table.item(r, COL_STEM) else ""
+            options = self._table.item(r, COL_OPTIONS).text().strip() if self._table.item(r, COL_OPTIONS) else ""
+            answer = self._table.item(r, COL_ANSWER).text().strip() if self._table.item(r, COL_ANSWER) else ""
+            analysis = (
+                self._table.item(r, COL_ANALYSIS).text().strip() if self._table.item(r, COL_ANALYSIS) else ""
+            )
             if not any([number, stem, options, answer, analysis]):
                 continue
             questions.append(

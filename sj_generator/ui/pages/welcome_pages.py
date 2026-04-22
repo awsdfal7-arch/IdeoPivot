@@ -6,21 +6,26 @@ from datetime import datetime
 from pathlib import Path
 import re
 import shutil
+from uuid import uuid4
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
+    QGridLayout,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QMenuBar,
     QMessageBox,
+    QPushButton,
+    QStackedLayout,
     QTextEdit,
     QSplitter,
     QTableWidget,
@@ -34,8 +39,10 @@ from PyQt6.QtWidgets import (
 )
 
 from sj_generator.config import (
+    load_welcome_table_font_point_size,
     load_welcome_table_column_visibility,
     load_welcome_tree_expanded_prefixes,
+    save_welcome_table_font_point_size,
     save_welcome_table_column_visibility,
     save_welcome_tree_expanded_prefixes,
 )
@@ -45,6 +52,7 @@ from sj_generator.io.sqlite_repo import (
     append_questions,
     DbQuestionRecord,
     count_questions_by_level_prefix,
+    delete_question_by_id,
     delete_questions_by_level_prefix,
     list_level_paths,
     load_all_questions,
@@ -53,12 +61,19 @@ from sj_generator.io.sqlite_repo import (
 )
 from sj_generator.models import Question
 from sj_generator.paths import app_paths
-from sj_generator.ui.constants import PAGE_AI_SELECT
 from sj_generator.ui.api_config_dialog import ApiConfigDialog
-from sj_generator.ui.program_settings_dialog import ProgramSettingsDialog
+from sj_generator.ui.program_settings_dialog import (
+    ProgramSettingsDialog,
+    SECTION_EXPORT,
+    SECTION_GENERAL,
+    SECTION_IMPORT,
+)
 from sj_generator.ui.state import AiSourceFileItem, WizardState, library_db_path_from_repo_parent_dir_text
+from sj_generator.ui.styles import rounded_panel_stylesheet
 
 LAST_COLUMN_MIN_WIDTH = 140
+TABLE_FONT_POINT_SIZE_MIN = 8
+TABLE_FONT_POINT_SIZE_MAX = 28
 TREE_ROLE_LEVEL_PATH = Qt.ItemDataRole.UserRole
 TREE_ROLE_LEVEL_PREFIX = int(Qt.ItemDataRole.UserRole) + 1
 TREE_ROLE_LEVEL_DEPTH = int(Qt.ItemDataRole.UserRole) + 2
@@ -73,15 +88,31 @@ TABLE_COLUMNS = [
     ("choice_2", "组合B", False),
     ("choice_3", "组合C", False),
     ("choice_4", "组合D", False),
-    ("textbook_version", "教材版本", False),
-    ("source_filename", "来源文件名", False),
     ("level_path", "所属层级", False),
+    ("textbook_version", "教材版本", False),
+    ("source", "来源", False),
     ("difficulty_score", "难度评级", False),
     ("knowledge_points", "考察知识点", False),
     ("abilities", "考察能力", False),
     ("created_at", "入库时间", False),
     ("updated_at", "最后修改时间", False),
 ]
+
+
+class _ZoomableTableWidget(QTableWidget):
+    def __init__(self, *args, zoom_callback=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._zoom_callback = zoom_callback
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if self._zoom_callback is not None:
+                delta = event.angleDelta().y()
+                if delta != 0:
+                    self._zoom_callback(1 if delta > 0 else -1)
+                    event.accept()
+                    return
+        super().wheelEvent(event)
 
 
 class WelcomePage(QWizardPage):
@@ -94,6 +125,7 @@ class WelcomePage(QWizardPage):
         self._row_resize_followup_pending = False
         self._column_defs = TABLE_COLUMNS
         self._column_visibility = self._load_column_visibility()
+        self._table_font_point_size = self._load_table_font_point_size()
         loaded_expanded_prefixes = load_welcome_tree_expanded_prefixes()
         self._expanded_level_prefixes = set(loaded_expanded_prefixes or [])
         self._has_saved_tree_state = loaded_expanded_prefixes is not None
@@ -109,16 +141,24 @@ class WelcomePage(QWizardPage):
         export_menu = menu_bar.addMenu("导出")
         self._export_md_action = export_menu.addAction("导出当前层级为 Markdown")
         self._export_md_action.triggered.connect(self._export_current_level_to_markdown)
-        self._export_current_level_xlsx_action = export_menu.addAction("导出当前层级为 xlsx")
+        export_xlsx_menu = export_menu.addMenu("导出为 xlsx")
+        self._export_current_level_xlsx_action = export_xlsx_menu.addAction("当前层级题目")
         self._export_current_level_xlsx_action.triggered.connect(self._export_current_level_to_xlsx)
-        self._export_db_table_xlsx_action = export_menu.addAction("导出整体数据库表为 xlsx")
+        self._export_db_table_xlsx_action = export_xlsx_menu.addAction("所有题目")
         self._export_db_table_xlsx_action.triggered.connect(self._export_db_table_to_xlsx)
+        edit_menu = menu_bar.addMenu("编辑")
+        self._add_question_action = edit_menu.addAction("新增题目")
+        self._add_question_action.triggered.connect(self._add_question_manually)
         view_menu = menu_bar.addMenu("视图")
         column_menu = view_menu.addMenu("表格列显示")
         settings_menu = menu_bar.addMenu("设置")
         self._general_settings_action = settings_menu.addAction("常规设定")
-        self._general_settings_action.triggered.connect(self._open_program_settings)
-        self._api_settings_action = settings_menu.addAction("配置API")
+        self._general_settings_action.triggered.connect(self._open_general_settings)
+        self._import_settings_action = settings_menu.addAction("导入设定")
+        self._import_settings_action.triggered.connect(self._open_import_settings)
+        self._export_settings_action = settings_menu.addAction("导出设定")
+        self._export_settings_action.triggered.connect(self._open_export_settings)
+        self._api_settings_action = settings_menu.addAction("API 配置")
         self._api_settings_action.triggered.connect(self._open_api_cfg)
 
         self._folder_tree = QTreeWidget()
@@ -134,10 +174,10 @@ class WelcomePage(QWizardPage):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self._folder_tree, 1)
         left_panel = QWidget()
-        left_panel.setStyleSheet("border: 1px solid black;")
+        left_panel.setStyleSheet(rounded_panel_stylesheet(background="#ffffff"))
         left_panel.setLayout(left_layout)
 
-        self._table = QTableWidget(0, len(self._column_defs))
+        self._table = _ZoomableTableWidget(0, len(self._column_defs), zoom_callback=self._adjust_table_font_size)
         self._table.setHorizontalHeaderLabels([title for _key, title, _visible in self._column_defs])
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -146,6 +186,22 @@ class WelcomePage(QWizardPage):
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setWordWrap(True)
+        self._table.setStyleSheet(
+            "QTableWidget {"
+            "border: 1px solid #000000; border-radius: 0px; background: #ffffff; gridline-color: #000000; outline: none;"
+            "}"
+            "QHeaderView {"
+            "background: #ffffff; border: none;"
+            "}"
+            "QHeaderView::section {"
+            "background: #ffffff; border: none; border-right: 1px solid #000000; border-bottom: 1px solid #000000;"
+            "padding: 4px 6px; font-weight: 600;"
+            "}"
+            "QHeaderView::section:last {"
+            "border-right: none;"
+            "}"
+        )
+        self._table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.horizontalHeader().sectionResized.connect(self._schedule_table_row_resize)
         self._table.cellDoubleClicked.connect(self._on_table_cell_double_clicked)
         self._column_actions: dict[int, object] = {}
@@ -159,11 +215,19 @@ class WelcomePage(QWizardPage):
             self._table.setColumnHidden(idx, not visible)
         self._rebalance_visible_columns()
 
+        self._table_placeholder = QLabel("请先从左侧层级中选择，以显示题目信息")
+        self._table_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table_placeholder.setWordWrap(True)
+        self._apply_table_font_size()
+
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(self._table, 1)
+        self._table_stack = QStackedLayout()
+        self._table_stack.addWidget(self._table_placeholder)
+        self._table_stack.addWidget(self._table)
+        right_layout.addLayout(self._table_stack, 1)
         right_panel = QWidget()
-        right_panel.setStyleSheet("border: 1px solid black;")
+        right_panel.setStyleSheet(rounded_panel_stylesheet(background="#ffffff"))
         right_panel.setLayout(right_layout)
 
         self._content_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -181,16 +245,13 @@ class WelcomePage(QWizardPage):
         layout.setMenuBar(menu_bar)
         layout.addWidget(self._content_splitter, 1)
         self.setLayout(layout)
+        self._set_table_placeholder_visible(True)
 
     def initializePage(self) -> None:
         self._db_path = self._current_db_path()
         self._refresh_level_tree()
         if self._folder_tree.currentItem() is None:
             self._populate_questions_table(self._state.draft_questions)
-
-    def nextId(self) -> int:
-        self._state.start_mode = "wizard"
-        return PAGE_AI_SELECT
 
     def _enter_main_flow(self) -> None:
         self._state.start_mode = "wizard"
@@ -217,7 +278,7 @@ class WelcomePage(QWizardPage):
     def _backup_import_source_files(self, paths: list[Path]) -> None:
         if not paths:
             return
-        target_dir = app_paths(Path(__file__).resolve().parents[3]).doc_dir
+        target_dir = self._db_path.parent / "doc"
         target_dir.mkdir(parents=True, exist_ok=True)
         for src in paths:
             if not src.exists() or not src.is_file():
@@ -243,10 +304,21 @@ class WelcomePage(QWizardPage):
         dlg.exec()
 
     def _open_program_settings(self) -> None:
-        dlg = ProgramSettingsDialog(self._state, self)
+        dlg = ProgramSettingsDialog(self._state, self, section=SECTION_GENERAL)
         if dlg.exec():
             self._db_path = self._current_db_path()
             self._refresh_level_tree()
+
+    def _open_general_settings(self) -> None:
+        self._open_program_settings()
+
+    def _open_import_settings(self) -> None:
+        dlg = ProgramSettingsDialog(self._state, self, section=SECTION_IMPORT)
+        dlg.exec()
+
+    def _open_export_settings(self) -> None:
+        dlg = ProgramSettingsDialog(self._state, self, section=SECTION_EXPORT)
+        dlg.exec()
 
     def _import_from_table_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "选择表格文件", "", "Excel (*.xlsx);;All Files (*)")
@@ -296,6 +368,7 @@ class WelcomePage(QWizardPage):
             excel_file_name=level_path,
             export_date=date.today(),
             questions=questions,
+            convertible_multi_mode=self._state.export_convertible_multi_mode,
         )
         md_path = Path(file_path)
         try:
@@ -355,6 +428,48 @@ class WelcomePage(QWizardPage):
             return
         self._state.last_export_dir = target_path.parent
         QMessageBox.information(self, "导出完成", f"已导出整体数据库表 xlsx：\n{target_path}")
+
+    def _add_question_manually(self) -> None:
+        current = self._folder_tree.currentItem()
+        default_level_path = str(current.data(0, TREE_ROLE_LEVEL_PATH) or "").strip() if current is not None else ""
+        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_record = DbQuestionRecord(
+            id=str(uuid4()),
+            stem="",
+            option_1="",
+            option_2="",
+            option_3="",
+            option_4="",
+            choice_1="",
+            choice_2="",
+            choice_3="",
+            choice_4="",
+            answer="",
+            analysis="",
+            question_type="单选",
+            textbook_version="",
+            source="录入",
+            level_path=default_level_path,
+            difficulty_score=None,
+            knowledge_points="",
+            abilities="",
+            created_at=now_text,
+            updated_at=now_text,
+        )
+        dlg = _QuestionEditDialog(new_record, self, create_mode=True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        created = dlg.updated_record()
+        if not created.stem.strip():
+            QMessageBox.warning(self, "无法新增", "题目内容不能为空。")
+            return
+        try:
+            append_questions(self._db_path, [created])
+        except Exception as e:
+            QMessageBox.critical(self, "新增失败", f"写入题目失败：{e}")
+            return
+        self._refresh_level_tree(preferred_level_path=created.level_path)
+        QMessageBox.information(self, "新增完成", "题目已新增。")
 
     def _refresh_level_tree(self, preferred_level_path: str | None = None) -> None:
         current_item = self._folder_tree.currentItem()
@@ -418,17 +533,20 @@ class WelcomePage(QWizardPage):
         else:
             self._table.setRowCount(0)
             self._schedule_table_row_resize()
+            self._set_table_placeholder_visible(True)
         self._sync_expanded_level_prefixes_from_tree()
 
     def _on_level_selection_changed(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None) -> None:
         if current is None:
             self._current_db_records = []
             self._table.setRowCount(0)
+            self._set_table_placeholder_visible(True)
             return
         level_path = current.data(0, TREE_ROLE_LEVEL_PATH)
         if not level_path:
             self._current_db_records = []
             self._table.setRowCount(0)
+            self._set_table_placeholder_visible(True)
             return
         records = load_questions_by_level_path(self._db_path, str(level_path))
         self._current_db_records = records
@@ -576,6 +694,7 @@ class WelcomePage(QWizardPage):
             values = self._build_question_row_values(row + 1, question)
             self._populate_row_by_values(row, values)
         self._schedule_table_row_resize()
+        self._set_table_placeholder_visible(False)
 
     def _populate_db_records_table(self, records: list[DbQuestionRecord]) -> None:
         self._table.setRowCount(len(records))
@@ -583,6 +702,10 @@ class WelcomePage(QWizardPage):
             values = self._build_db_row_values(row + 1, record)
             self._populate_row_by_values(row, values)
         self._schedule_table_row_resize()
+        self._set_table_placeholder_visible(False)
+
+    def _set_table_placeholder_visible(self, visible: bool) -> None:
+        self._table_stack.setCurrentWidget(self._table_placeholder if visible else self._table)
 
     def _build_question_row_values(self, sequence: int, question: Question) -> dict[str, str]:
         return {
@@ -597,7 +720,7 @@ class WelcomePage(QWizardPage):
             "choice_3": question.choice_3,
             "choice_4": question.choice_4,
             "textbook_version": "",
-            "source_filename": "",
+            "source": "",
             "level_path": "",
             "difficulty_score": "",
             "knowledge_points": "",
@@ -619,7 +742,7 @@ class WelcomePage(QWizardPage):
             "choice_3": record.choice_3,
             "choice_4": record.choice_4,
             "textbook_version": record.textbook_version,
-            "source_filename": record.source_filename,
+            "source": record.source,
             "level_path": record.level_path,
             "difficulty_score": "" if record.difficulty_score is None else str(record.difficulty_score),
             "knowledge_points": record.knowledge_points,
@@ -835,12 +958,60 @@ class WelcomePage(QWizardPage):
         }
         save_welcome_table_column_visibility(visibility)
 
+    def _load_table_font_point_size(self) -> int:
+        saved = load_welcome_table_font_point_size()
+        default_size = self.font().pointSize()
+        if default_size <= 0:
+            default_size = 10
+        if saved is None:
+            return default_size
+        return max(TABLE_FONT_POINT_SIZE_MIN, min(TABLE_FONT_POINT_SIZE_MAX, saved))
+
+    def _apply_table_font_size(self) -> None:
+        font = self._table.font()
+        font.setPointSize(self._table_font_point_size)
+        self._table.setFont(font)
+        self._table.horizontalHeader().setFont(font)
+        self._table_placeholder.setFont(font)
+        self._table.doItemsLayout()
+        self._table.viewport().update()
+        self._table.horizontalHeader().viewport().update()
+        self._schedule_table_row_resize()
+
+    def _adjust_table_font_size(self, step: int) -> None:
+        new_size = max(
+            TABLE_FONT_POINT_SIZE_MIN,
+            min(TABLE_FONT_POINT_SIZE_MAX, self._table_font_point_size + int(step)),
+        )
+        if new_size == self._table_font_point_size:
+            return
+        self._table_font_point_size = new_size
+        self._apply_table_font_size()
+        save_welcome_table_font_point_size(self._table_font_point_size)
+
     def _on_table_cell_double_clicked(self, row: int, _column: int) -> None:
         if row < 0 or row >= len(self._current_db_records):
             return
         record = self._current_db_records[row]
         dlg = _QuestionEditDialog(record, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        result = dlg.exec()
+        if result == _QuestionEditDialog.DELETE_RESULT:
+            deleted_count = delete_question_by_id(self._db_path, record.id)
+            if deleted_count <= 0:
+                QMessageBox.warning(self, "删除失败", "未找到要删除的题目，可能已被移除。")
+                self._refresh_level_tree()
+                return
+            self._current_db_records = []
+            self._table.setRowCount(0)
+            self._schedule_table_row_resize()
+            current = self._folder_tree.currentItem()
+            preferred_level_path = ""
+            if current is not None:
+                preferred_level_path = str(current.data(0, TREE_ROLE_LEVEL_PATH) or "").strip()
+            self._refresh_level_tree(preferred_level_path=preferred_level_path)
+            QMessageBox.information(self, "删除完成", "题目已删除。")
+            return
+        if result != QDialog.DialogCode.Accepted:
             return
         updated = dlg.updated_record()
         try:
@@ -849,22 +1020,17 @@ class WelcomePage(QWizardPage):
             QMessageBox.critical(self, "保存失败", f"更新题目失败：{e}")
             return
         self._current_db_records[row] = updated
-        current = self._folder_tree.currentItem()
-        if current is None:
-            return
-        level_path = current.data(0, TREE_ROLE_LEVEL_PATH)
-        if not level_path:
-            return
-        records = load_questions_by_level_path(self._db_path, str(level_path))
-        self._current_db_records = records
-        self._populate_db_records_table(records)
+        self._refresh_level_tree(preferred_level_path=updated.level_path)
 
 
 class _QuestionEditDialog(QDialog):
-    def __init__(self, record: DbQuestionRecord, parent=None) -> None:
+    DELETE_RESULT = 2
+
+    def __init__(self, record: DbQuestionRecord, parent=None, *, create_mode: bool = False) -> None:
         super().__init__(parent)
         self._record = record
-        self.setWindowTitle("编辑条目")
+        self._create_mode = create_mode
+        self.setWindowTitle("新增题目" if create_mode else "编辑条目")
         self.resize(760, 620)
 
         self._type_combo = QComboBox()
@@ -873,6 +1039,7 @@ class _QuestionEditDialog(QDialog):
 
         self._stem_edit = QTextEdit()
         self._stem_edit.setPlainText(record.stem)
+        self._stem_edit.setPlaceholderText("题目内容")
         self._option_1_edit = QLineEdit(record.option_1)
         self._option_2_edit = QLineEdit(record.option_2)
         self._option_3_edit = QLineEdit(record.option_3)
@@ -884,36 +1051,179 @@ class _QuestionEditDialog(QDialog):
         self._answer_edit = QLineEdit(record.answer)
         self._analysis_edit = QTextEdit()
         self._analysis_edit.setPlainText(record.analysis)
+        self._analysis_edit.setPlaceholderText("解析内容")
 
-        self._source_label = QLabel(record.source_filename)
-        self._level_label = QLabel(record.level_path)
-        self._version_label = QLabel(record.textbook_version)
+        self._source_value = QLineEdit(self._format_source_display(record.source))
+        self._source_value.setReadOnly(True)
+        self._source_value.setPlaceholderText("题目来源：")
+        self._level_edit = QLineEdit(self._format_prefixed_display("所属层级：", record.level_path))
+        self._level_edit.setPlaceholderText("所属层级：")
+        self._version_edit = QComboBox()
+        self._version_edit.setEditable(True)
+        self._version_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for version in self._collect_textbook_version_options(record.textbook_version):
+            self._version_edit.addItem(self._format_prefixed_display("教材版本：", version))
+        self._version_edit.setCurrentText(self._format_prefixed_display("教材版本：", record.textbook_version))
+        if self._version_edit.lineEdit() is not None:
+            self._version_edit.lineEdit().setPlaceholderText("教材版本：")
+        self._bind_locked_prefix(self._level_edit, "所属层级：")
+        if self._version_edit.lineEdit() is not None:
+            self._bind_locked_prefix(self._version_edit.lineEdit(), "教材版本：")
+        self._option_1_label = QLabel("A：")
+        self._option_2_label = QLabel("B：")
+        self._option_3_label = QLabel("C：")
+        self._option_4_label = QLabel("D：")
+        self._choice_1_label = QLabel("A：")
+        self._choice_2_label = QLabel("B：")
+        self._choice_3_label = QLabel("C：")
+        self._choice_4_label = QLabel("D：")
+        self._stem_edit.setMinimumHeight(180)
+        self._analysis_edit.setMinimumHeight(140)
 
-        form = QFormLayout()
-        form.addRow("类型：", self._type_combo)
-        form.addRow("题目：", self._stem_edit)
-        form.addRow("选项1：", self._option_1_edit)
-        form.addRow("选项2：", self._option_2_edit)
-        form.addRow("选项3：", self._option_3_edit)
-        form.addRow("选项4：", self._option_4_edit)
-        form.addRow("组合A：", self._choice_1_edit)
-        form.addRow("组合B：", self._choice_2_edit)
-        form.addRow("组合C：", self._choice_3_edit)
-        form.addRow("组合D：", self._choice_4_edit)
-        form.addRow("答案：", self._answer_edit)
-        form.addRow("解析：", self._analysis_edit)
-        form.addRow("来源文件名：", self._source_label)
-        form.addRow("所属层级：", self._level_label)
-        form.addRow("教材版本：", self._version_label)
+        def _wrap_panel(title: str, body_layout: QGridLayout | QVBoxLayout | QHBoxLayout) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(2, 2, 2, 2)
+            layout.setSpacing(8)
+            if title:
+                title_label = QLabel(title)
+                title_label.setStyleSheet("font-weight: 600;")
+                layout.addWidget(title_label)
+            layout.addLayout(body_layout)
+            return panel
+
+        def _make_label_panel(text: str) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(2, 2, 2, 2)
+            label = QLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet("font-weight: 600;")
+            layout.addStretch(1)
+            layout.addWidget(label)
+            layout.addStretch(1)
+            return panel
+
+        stem_layout = QVBoxLayout()
+        stem_layout.setContentsMargins(0, 0, 0, 0)
+        stem_layout.addWidget(self._stem_edit)
+        stem_panel = _wrap_panel("", stem_layout)
+
+        option_fields_layout = QGridLayout()
+        option_fields_layout.setContentsMargins(0, 0, 0, 0)
+        option_fields_layout.setHorizontalSpacing(8)
+        option_fields_layout.setVerticalSpacing(8)
+        option_fields_layout.addWidget(self._option_1_label, 0, 0)
+        option_fields_layout.addWidget(self._option_1_edit, 0, 1)
+        option_fields_layout.addWidget(self._option_2_label, 1, 0)
+        option_fields_layout.addWidget(self._option_2_edit, 1, 1)
+        option_fields_layout.addWidget(self._option_3_label, 2, 0)
+        option_fields_layout.addWidget(self._option_3_edit, 2, 1)
+        option_fields_layout.addWidget(self._option_4_label, 3, 0)
+        option_fields_layout.addWidget(self._option_4_edit, 3, 1)
+        option_fields_layout.setColumnStretch(1, 1)
+
+        choice_fields_layout = QGridLayout()
+        choice_fields_layout.setContentsMargins(0, 0, 0, 0)
+        choice_fields_layout.setHorizontalSpacing(8)
+        choice_fields_layout.setVerticalSpacing(8)
+        choice_fields_layout.addWidget(self._choice_1_label, 0, 0)
+        choice_fields_layout.addWidget(self._choice_1_edit, 0, 1)
+        choice_fields_layout.addWidget(self._choice_2_label, 1, 0)
+        choice_fields_layout.addWidget(self._choice_2_edit, 1, 1)
+        choice_fields_layout.addWidget(self._choice_3_label, 2, 0)
+        choice_fields_layout.addWidget(self._choice_3_edit, 2, 1)
+        choice_fields_layout.addWidget(self._choice_4_label, 3, 0)
+        choice_fields_layout.addWidget(self._choice_4_edit, 3, 1)
+        choice_fields_layout.setColumnStretch(1, 1)
+
+        option_fields_widget = QWidget()
+        option_fields_widget.setLayout(option_fields_layout)
+        self._choice_fields_widget = QWidget()
+        self._choice_fields_widget.setLayout(choice_fields_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(12)
+        options_layout.addWidget(option_fields_widget, 3)
+        options_layout.addWidget(self._choice_fields_widget, 2)
+        options_panel_layout = QVBoxLayout()
+        options_panel_layout.setContentsMargins(0, 0, 0, 0)
+        options_panel_layout.setSpacing(8)
+        options_panel_layout.addLayout(options_layout)
+        options_panel = _wrap_panel("", options_panel_layout)
+
+        answer_layout = QGridLayout()
+        answer_layout.setContentsMargins(0, 0, 0, 0)
+        answer_layout.setHorizontalSpacing(8)
+        answer_layout.setVerticalSpacing(8)
+        answer_layout.addWidget(QLabel("答案："), 0, 0)
+        answer_layout.addWidget(self._answer_edit, 0, 1)
+        answer_layout.addWidget(QLabel("题型："), 1, 0)
+        answer_layout.addWidget(self._type_combo, 1, 1)
+        answer_layout.setColumnStretch(1, 1)
+        answer_panel = _wrap_panel("", answer_layout)
+
+        analysis_layout = QVBoxLayout()
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.addWidget(self._analysis_edit)
+        analysis_panel = _wrap_panel("", analysis_layout)
+
+        source_content_layout = QVBoxLayout()
+        source_content_layout.setContentsMargins(0, 0, 0, 0)
+        source_content_layout.addWidget(self._source_value)
+        source_content_panel = _wrap_panel("", source_content_layout)
+
+        level_content_layout = QVBoxLayout()
+        level_content_layout.setContentsMargins(0, 0, 0, 0)
+        level_content_layout.addWidget(self._level_edit)
+        level_content_panel = _wrap_panel("", level_content_layout)
+
+        version_content_layout = QVBoxLayout()
+        version_content_layout.setContentsMargins(0, 0, 0, 0)
+        version_content_layout.addWidget(self._version_edit)
+        version_content_panel = _wrap_panel("", version_content_layout)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setText("确定")
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.setText("取消")
+
+        button_row = QHBoxLayout()
+        self._delete_btn = QPushButton("删除题目")
+        self._delete_btn.clicked.connect(self._on_delete_clicked)
+        if not self._create_mode:
+            button_row.addWidget(self._delete_btn)
+        button_row.addStretch(1)
+        button_row.addWidget(buttons)
+
+        content_grid = QGridLayout()
+        content_grid.setContentsMargins(0, 0, 0, 0)
+        content_grid.setHorizontalSpacing(10)
+        content_grid.setVerticalSpacing(10)
+        content_grid.addWidget(stem_panel, 0, 0, 5, 2)
+        content_grid.addWidget(answer_panel, 0, 2, 1, 2)
+        content_grid.addWidget(options_panel, 1, 2, 4, 2)
+        content_grid.addWidget(analysis_panel, 5, 0, 2, 4)
+        content_grid.addWidget(level_content_panel, 7, 0, 1, 4)
+        content_grid.addWidget(version_content_panel, 8, 0, 1, 4)
+        content_grid.addWidget(source_content_panel, 9, 0, 1, 4)
+        for col in range(4):
+            content_grid.setColumnStretch(col, 1)
+        for row in range(10):
+            content_grid.setRowStretch(row, 1 if row <= 6 else 0)
 
         layout = QVBoxLayout()
-        layout.addLayout(form)
-        layout.addWidget(buttons)
+        layout.addLayout(content_grid)
+        layout.addLayout(button_row)
         self.setLayout(layout)
+        self._type_combo.currentTextChanged.connect(self._sync_choice_fields_visibility)
+        self._sync_choice_fields_visibility(self._type_combo.currentText())
 
     def updated_record(self) -> DbQuestionRecord:
         return replace(
@@ -930,5 +1240,117 @@ class _QuestionEditDialog(QDialog):
             answer=self._answer_edit.text().strip(),
             analysis=self._analysis_edit.toPlainText().strip(),
             question_type=self._type_combo.currentText().strip(),
+            source=self._parse_source_display(self._source_value.text()),
+            level_path=self._parse_prefixed_display("所属层级：", self._level_edit.text()),
+            textbook_version=self._parse_prefixed_display("教材版本：", self._version_edit.currentText()),
             updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
+
+    def _format_source_display(self, source: str) -> str:
+        return self._format_prefixed_display("题目来源：", source)
+
+    def _parse_source_display(self, text: str) -> str:
+        return self._parse_prefixed_display("题目来源：", text)
+
+    def _bind_locked_prefix(self, edit: QLineEdit, prefix: str) -> None:
+        edit.textEdited.connect(
+            lambda _text, target=edit, locked_prefix=prefix: self._ensure_locked_prefix(target, locked_prefix)
+        )
+        edit.cursorPositionChanged.connect(
+            lambda _old, new, target=edit, locked_prefix=prefix: self._clamp_prefix_cursor(
+                target, locked_prefix, new
+            )
+        )
+        self._ensure_locked_prefix(edit, prefix)
+
+    def _collect_textbook_version_options(self, current_value: str) -> list[str]:
+        versions: list[str] = []
+        seen: set[str] = set()
+
+        def add_version(value: str) -> None:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            versions.append(normalized)
+
+        add_version(current_value)
+        parent = self.parent()
+        current_records = getattr(parent, "_current_db_records", None)
+        if isinstance(current_records, list):
+            for record in current_records:
+                add_version(getattr(record, "textbook_version", ""))
+        return versions
+
+    def _ensure_locked_prefix(self, edit: QLineEdit, prefix: str) -> None:
+        min_pos = len(prefix)
+        normalized_text = self._format_prefixed_display(prefix, self._parse_prefixed_display(prefix, edit.text()))
+        if edit.text() != normalized_text:
+            current_pos = max(min_pos, edit.cursorPosition())
+            edit.setText(normalized_text)
+            edit.setCursorPosition(min(current_pos, len(normalized_text)))
+            return
+        if edit.cursorPosition() < min_pos:
+            edit.setCursorPosition(min_pos)
+
+    def _clamp_prefix_cursor(self, edit: QLineEdit, prefix: str, new_position: int) -> None:
+        min_pos = len(prefix)
+        if new_position < min_pos:
+            edit.setCursorPosition(min_pos)
+
+    def _format_prefixed_display(self, prefix: str, value: str) -> str:
+        normalized_prefix = str(prefix or "").strip()
+        normalized_value = (value or "").strip()
+        if not normalized_prefix:
+            return normalized_value
+        if not normalized_value:
+            return normalized_prefix
+        if normalized_value.startswith(normalized_prefix):
+            return normalized_value
+        return f"{normalized_prefix}{normalized_value}"
+
+    def _parse_prefixed_display(self, prefix: str, text: str) -> str:
+        normalized_prefix = str(prefix or "").strip()
+        normalized_value = (text or "").strip()
+        if normalized_prefix and normalized_value.startswith(normalized_prefix):
+            return normalized_value[len(normalized_prefix):].strip()
+        return normalized_value
+
+    def _on_delete_clicked(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "确认删除",
+            "确定删除这道题目吗？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.done(self.DELETE_RESULT)
+
+    def _sync_choice_fields_visibility(self, question_type: str) -> None:
+        normalized_type = (question_type or "").strip()
+        option_labels = (
+            ("①：", "②：", "③：", "④：")
+            if normalized_type in ("多选", "可转多选")
+            else ("A：", "B：", "C：", "D：")
+        )
+        for widget, text in (
+            (self._option_1_label, option_labels[0]),
+            (self._option_2_label, option_labels[1]),
+            (self._option_3_label, option_labels[2]),
+            (self._option_4_label, option_labels[3]),
+        ):
+            widget.setText(text)
+        visible = normalized_type == "可转多选"
+        self._choice_fields_widget.setVisible(visible)
+        for widget in (
+            self._choice_1_label,
+            self._choice_1_edit,
+            self._choice_2_label,
+            self._choice_2_edit,
+            self._choice_3_label,
+            self._choice_3_edit,
+            self._choice_4_label,
+            self._choice_4_edit,
+        ):
+            widget.setVisible(visible)

@@ -24,7 +24,7 @@ class DbQuestionRecord:
     analysis: str
     question_type: str
     textbook_version: str
-    source_filename: str
+    source: str
     level_path: str
     difficulty_score: int | None
     knowledge_points: str
@@ -70,7 +70,7 @@ def load_questions_by_level_path(path: Path, level_path: str) -> list[DbQuestion
                 analysis,
                 question_type,
                 textbook_version,
-                source_filename,
+                source,
                 level_path,
                 difficulty_score,
                 knowledge_points,
@@ -108,7 +108,7 @@ def load_all_questions(path: Path) -> list[DbQuestionRecord]:
                 analysis,
                 question_type,
                 textbook_version,
-                source_filename,
+                source,
                 level_path,
                 difficulty_score,
                 knowledge_points,
@@ -144,7 +144,7 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
                 analysis = ?,
                 question_type = ?,
                 textbook_version = ?,
-                source_filename = ?,
+                source = ?,
                 level_path = ?,
                 difficulty_score = ?,
                 knowledge_points = ?,
@@ -167,7 +167,7 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
                 question.analysis,
                 question.question_type,
                 question.textbook_version,
-                question.source_filename,
+                question.source,
                 question.level_path,
                 question.difficulty_score,
                 question.knowledge_points,
@@ -178,6 +178,22 @@ def update_question(path: Path, question: DbQuestionRecord) -> None:
             ),
         )
         conn.commit()
+
+
+def delete_question_by_id(path: Path, question_id: str) -> int:
+    if not path.exists():
+        return 0
+    normalized_question_id = str(question_id or "").strip()
+    if not normalized_question_id:
+        return 0
+    with sqlite3.connect(path) as conn:
+        _create_table(conn)
+        cur = conn.execute(
+            f"DELETE FROM {TABLE_NAME} WHERE id = ?",
+            (normalized_question_id,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
 
 
 def delete_questions_by_level_path(path: Path, level_path: str) -> int:
@@ -278,7 +294,7 @@ def _create_table(conn: sqlite3.Connection) -> None:
             analysis TEXT NOT NULL DEFAULT '',
             question_type TEXT NOT NULL DEFAULT '',
             textbook_version TEXT NOT NULL DEFAULT '',
-            source_filename TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
             level_path TEXT NOT NULL DEFAULT '',
             difficulty_score INTEGER,
             knowledge_points TEXT NOT NULL DEFAULT '',
@@ -299,6 +315,19 @@ def _create_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             f"ALTER TABLE {TABLE_NAME} ADD COLUMN {column_name} TEXT NOT NULL DEFAULT ''"
         )
+    if "source" not in existing_columns:
+        conn.execute(
+            f"ALTER TABLE {TABLE_NAME} ADD COLUMN source TEXT NOT NULL DEFAULT ''"
+        )
+        existing_columns.add("source")
+    if "source_filename" in existing_columns:
+        conn.execute(
+            f"""
+            UPDATE {TABLE_NAME}
+            SET source = source_filename
+            WHERE TRIM(COALESCE(source, '')) = '' AND TRIM(COALESCE(source_filename, '')) <> ''
+            """
+        )
 
 
 def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRecord]) -> None:
@@ -318,7 +347,7 @@ def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRe
             q.analysis,
             q.question_type,
             q.textbook_version,
-            q.source_filename,
+            q.source,
             q.level_path,
             q.difficulty_score,
             q.knowledge_points,
@@ -347,7 +376,7 @@ def _insert_questions(conn: sqlite3.Connection, questions: Iterable[DbQuestionRe
             analysis,
             question_type,
             textbook_version,
-            source_filename,
+            source,
             level_path,
             difficulty_score,
             knowledge_points,
@@ -376,7 +405,7 @@ def _row_to_record(row: tuple[object, ...]) -> DbQuestionRecord:
         analysis=str(row[11] or ""),
         question_type=str(row[12] or ""),
         textbook_version=str(row[13] or ""),
-        source_filename=str(row[14] or ""),
+        source=str(row[14] or ""),
         level_path=str(row[15] or ""),
         difficulty_score=int(row[16]) if row[16] is not None else None,
         knowledge_points=str(row[17] or ""),
