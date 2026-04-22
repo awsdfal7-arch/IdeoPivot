@@ -45,11 +45,13 @@ def import_draft_questions_to_db(
     questions: list[Question],
     level_path: str,
     source_files: Iterable[Path] | None = None,
+    textbook_version: str = "",
 ) -> int:
     records = draft_questions_to_db_records(
         questions=questions,
         level_path=level_path,
         source_files=source_files,
+        textbook_version=textbook_version,
     )
     append_questions(db_path, records)
     return len(records)
@@ -60,6 +62,7 @@ def draft_questions_to_db_records(
     questions: list[Question],
     level_path: str,
     source_files: Iterable[Path] | None = None,
+    textbook_version: str = "",
 ) -> list[DbQuestionRecord]:
     normalized_level_path = (level_path or "").strip()
     if not normalized_level_path:
@@ -68,11 +71,13 @@ def draft_questions_to_db_records(
         raise ValueError("没有可写入数据库的题目。")
 
     source = _resolve_source(source_files)
+    normalized_textbook_version = (textbook_version or "").strip()
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return [
         _convert_question(
             question,
             source=source,
+            textbook_version=normalized_textbook_version,
             level_path=normalized_level_path,
             now_text=now_text,
         )
@@ -102,6 +107,7 @@ def _convert_question(
     question: Question,
     *,
     source: str,
+    textbook_version: str,
     level_path: str,
     now_text: str,
 ) -> DbQuestionRecord:
@@ -124,7 +130,7 @@ def _convert_question(
         answer=answer,
         analysis=(question.analysis or "").strip(),
         question_type=question_type,
-        textbook_version="",
+        textbook_version=textbook_version,
         source=source,
         level_path=level_path,
         difficulty_score=None,

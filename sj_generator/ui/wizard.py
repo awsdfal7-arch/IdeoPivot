@@ -13,6 +13,7 @@ from sj_generator.ui.state import (
     normalize_analysis_provider,
     normalize_default_repo_parent_dir_text,
     normalize_export_convertible_multi_mode,
+    normalize_preferred_textbook_version,
 )
 from sj_generator.ui.styles import APP_STYLESHEET
 from sj_generator.ui.constants import PAGE_INTRO, PAGE_WELCOME
@@ -96,6 +97,9 @@ class GeneratorWizard(QWizard):
         self._state.analysis_model_name = normalize_analysis_model_name(data.get("analysis_model_name"))
         self._state.export_convertible_multi_mode = normalize_export_convertible_multi_mode(
             data.get("export_convertible_multi_mode")
+        )
+        self._state.preferred_textbook_version = normalize_preferred_textbook_version(
+            data.get("preferred_textbook_version")
         )
 
 def main() -> None:

@@ -26,7 +26,10 @@ from sj_generator.ui.state import (
     normalize_ai_concurrency,
     normalize_analysis_model_name,
     normalize_analysis_provider,
+    normalize_preferred_textbook_version,
+    library_db_path_from_repo_parent_dir_text,
 )
+from sj_generator.io.sqlite_repo import load_all_questions
 
 _ANALYSIS_TARGET_CANDIDATES = [
     "DeepSeek / deepseek-reasoner",
@@ -189,6 +192,14 @@ class ProgramSettingsDialog(QDialog):
         self._default_repo_parent_dir_edit.setPlaceholderText("例如：C:/Users/你的用户名/Desktop/思政题库")
         self._default_repo_parent_dir_browse_btn = QPushButton("选择…")
         self._default_repo_parent_dir_browse_btn.clicked.connect(self._browse_default_repo_parent_dir)
+        self._preferred_textbook_version_combo = QComboBox()
+        self._preferred_textbook_version_combo.setEditable(True)
+        self._preferred_textbook_version_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for version in self._collect_textbook_version_options():
+            self._preferred_textbook_version_combo.addItem(version)
+        self._preferred_textbook_version_combo.setCurrentText(
+            normalize_preferred_textbook_version(self._state.preferred_textbook_version)
+        )
 
         analysis_row = QHBoxLayout()
         analysis_row.addWidget(self._analysis_target_combo, 1)
@@ -201,6 +212,7 @@ class ProgramSettingsDialog(QDialog):
         form = QFormLayout()
         if self._section == SECTION_GENERAL:
             form.addRow("默认题库保存位置：", default_repo_row)
+            form.addRow("题目版本首选项：", self._preferred_textbook_version_combo)
         elif self._section == SECTION_IMPORT:
             form.addRow("统一并发数：", self._concurrency_combo)
             form.addRow("导入文档时解析生成：", self._import_analysis_combo)
@@ -231,6 +243,9 @@ class ProgramSettingsDialog(QDialog):
         if self._section == SECTION_GENERAL:
             self._state.default_repo_parent_dir_text = normalize_default_repo_parent_dir_text(
                 self._default_repo_parent_dir_edit.text()
+            )
+            self._state.preferred_textbook_version = normalize_preferred_textbook_version(
+                self._preferred_textbook_version_combo.currentText()
             )
         elif self._section == SECTION_IMPORT:
             provider, model_name = self._current_analysis_target()
@@ -272,8 +287,29 @@ class ProgramSettingsDialog(QDialog):
                 "export_convertible_multi_mode": normalize_export_convertible_multi_mode(
                     self._state.export_convertible_multi_mode
                 ),
+                "preferred_textbook_version": normalize_preferred_textbook_version(
+                    self._state.preferred_textbook_version
+                ),
             }
         )
+
+    def _collect_textbook_version_options(self) -> list[str]:
+        versions: list[str] = []
+        seen: set[str] = set()
+
+        def add_version(value: str) -> None:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            versions.append(normalized)
+
+        add_version(self._state.preferred_textbook_version)
+        db_path = library_db_path_from_repo_parent_dir_text(self._state.default_repo_parent_dir_text)
+        if db_path.exists():
+            for record in load_all_questions(db_path):
+                add_version(record.textbook_version)
+        return versions
 
     def _current_analysis_target(self) -> tuple[str, str]:
         return _parse_analysis_target_text(self._analysis_target_combo.currentText())

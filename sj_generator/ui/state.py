@@ -11,6 +11,7 @@ EXPORT_CONVERTIBLE_MULTI_MODE_OPTIONS = ("keep_combo", "as_multi")
 DEFAULT_ANALYSIS_MODEL_NAME = "deepseek-reasoner"
 DEFAULT_REPO_PARENT_DIR_NAME = "思政题库"
 DEFAULT_LIBRARY_DB_FILE_NAME = "思政题库.db"
+DEFAULT_PREFERRED_TEXTBOOK_VERSION = "2026年春"
 
 
 def normalize_ai_concurrency(value: int | None) -> int:
@@ -43,6 +44,11 @@ def default_repo_parent_dir() -> Path:
 def normalize_default_repo_parent_dir_text(value: str | None) -> str:
     text = (value or "").strip()
     return text or str(default_repo_parent_dir())
+
+
+def normalize_preferred_textbook_version(value: str | None) -> str:
+    text = (value or "").strip()
+    return text or DEFAULT_PREFERRED_TEXTBOOK_VERSION
 
 
 def library_db_path_from_repo_parent_dir_text(value: str | None) -> Path:
@@ -83,6 +89,7 @@ class WizardState:
     analysis_provider: str = "deepseek"
     analysis_model_name: str = DEFAULT_ANALYSIS_MODEL_NAME
     export_convertible_multi_mode: str = "keep_combo"
+    preferred_textbook_version: str = DEFAULT_PREFERRED_TEXTBOOK_VERSION
     ai_concurrency: int = 3
     db_import_completed: bool = False
     db_import_count: int = 0

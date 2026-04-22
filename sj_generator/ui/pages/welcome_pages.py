@@ -447,7 +447,7 @@ class WelcomePage(QWizardPage):
             answer="",
             analysis="",
             question_type="单选",
-            textbook_version="",
+            textbook_version=self._state.preferred_textbook_version,
             source="录入",
             level_path=default_level_path,
             difficulty_score=None,

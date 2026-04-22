@@ -107,6 +107,7 @@ def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool
             questions=questions,
             level_path=level_path,
             source_files=state.ai_source_files or [],
+            textbook_version=state.preferred_textbook_version,
         )
     except Exception as e:
         state.db_import_error = str(e)
