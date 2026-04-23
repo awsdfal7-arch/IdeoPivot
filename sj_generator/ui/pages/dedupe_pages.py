@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWizard,
     QWizardPage,
 )
 
@@ -28,6 +29,47 @@ from sj_generator.ui.constants import (
     PAGE_IMPORT_SUCCESS,
 )
 from sj_generator.ui.pages.analysis_pages import _commit_draft_questions_to_db
+
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
 
 
 def _format_db_question_options(record: DbQuestionRecord) -> str:
@@ -124,12 +166,14 @@ class DedupeResultPage(QWizardPage):
         self._current_left_source_path = self._resolve_left_source_path()
 
     def initializePage(self) -> None:
+        self._sync_wizard_buttons()
         self._current_left_source_path = self._resolve_left_source_path()
         if self._state.dedupe_hits is not None:
             self._hits = self._state.dedupe_hits
             self._render_hits(self._hits)
             self._running = False
             self._done = True
+            self._sync_wizard_buttons()
             self.completeChanged.emit()
             return
 
@@ -181,6 +225,17 @@ class DedupeResultPage(QWizardPage):
             return PAGE_AI_ANALYSIS
         return PAGE_IMPORT_SUCCESS
 
+    def _sync_wizard_buttons(self) -> None:
+        wizard = self.wizard()
+        if not isinstance(wizard, QWizard):
+            return
+        next_text = "查重中…"
+        if self._done and not self._running:
+            next_text = "进入解析" if self._state.analysis_enabled else "写入题库"
+        wizard.setButtonText(QWizard.WizardButton.BackButton, "返回解析")
+        wizard.setButtonText(QWizard.WizardButton.NextButton, next_text)
+        wizard.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
+
     def _render_hits(self, hits: list[DedupeHit]) -> None:
         self._table.setRowCount(len(hits))
         for r, h in enumerate(hits):
@@ -204,6 +259,7 @@ class DedupeResultPage(QWizardPage):
         else:
             self._render_hits(hits)
             self._status_label.setText(f"库内查重完成：{len(hits)} 条结果（双击查看详情）")
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _on_error(self, msg: str) -> None:
@@ -211,8 +267,9 @@ class DedupeResultPage(QWizardPage):
         self._done = False
         self._thread = None
         self._worker = None
-        QMessageBox.critical(self, "查重失败", msg)
+        _show_message_box(self, title="查重失败", text=msg, icon=QMessageBox.Icon.Critical)
         self._status_label.setText("查重失败。")
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _open_detail(self, row: int, col: int) -> None:
@@ -306,6 +363,7 @@ class _DedupeDetailDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
+        _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Ok), "确定")
 
         layout = QVBoxLayout()
         layout.addWidget(QLabel(f"相似度：{hit.similarity:.3f}"))

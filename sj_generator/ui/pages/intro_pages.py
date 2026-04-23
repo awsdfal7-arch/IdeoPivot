@@ -26,6 +26,46 @@ from sj_generator.paths import app_paths
 from sj_generator.ui.styles import rounded_panel_stylesheet
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button: QPushButton | None, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
 
 
 def _quotation_dir() -> Path:
@@ -71,9 +111,7 @@ class IntroPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle("登录")
-
-        quote_text, author_name, photo_path = _load_quote_content()
-        self._photo_path = photo_path
+        self._photo_path: Path | None = None
         self._photo_pixmap: QPixmap | None = None
 
         self._photo_label = QLabel()
@@ -82,24 +120,20 @@ class IntroPage(QWizardPage):
         self._photo_label.setMinimumSize(300, 380)
         self._photo_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._photo_label.setStyleSheet(rounded_panel_stylesheet(background="#f7f7f7"))
-        self._apply_photo()
+        self._photo_label.setText("正在加载图片…")
 
-        quote_label = QLabel()
-        quote_label.setText(
-            '<div style="margin: 0; line-height: 1.2; white-space: pre-wrap;">'
-            f"{escape(f'　　{quote_text}')}"
-            "</div>"
-        )
-        quote_label.setTextFormat(Qt.TextFormat.RichText)
-        quote_label.setWordWrap(True)
-        quote_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        quote_label.setStyleSheet(
+        self._quote_label = QLabel()
+        self._quote_label.setText("正在加载名言…")
+        self._quote_label.setTextFormat(Qt.TextFormat.RichText)
+        self._quote_label.setWordWrap(True)
+        self._quote_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._quote_label.setStyleSheet(
             "background: transparent; border: none; "
             "font-size: 26px; font-weight: 600; color: #c00000; "
             "font-family: 'KaiTi', 'STKaiti', 'SimSun', 'Songti SC';"
         )
-        quote_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        quote_label.setContentsMargins(0, 0, 0, 0)
+        self._quote_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._quote_label.setContentsMargins(0, 0, 0, 0)
 
         username_edit = QLineEdit()
         username_edit.setPlaceholderText("请输入用户名")
@@ -183,7 +217,7 @@ class IntroPage(QWizardPage):
         quote_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         quote_layout = QVBoxLayout()
         quote_layout.setContentsMargins(0, 0, 0, 0)
-        quote_layout.addWidget(quote_label, 1)
+        quote_layout.addWidget(self._quote_label, 1)
         quote_panel.setLayout(quote_layout)
 
         right_layout = QVBoxLayout()
@@ -198,6 +232,7 @@ class IntroPage(QWizardPage):
         layout = QVBoxLayout()
         layout.addLayout(content_layout, 1)
         self.setLayout(layout)
+        QTimer.singleShot(0, self._load_quote_and_photo)
         QTimer.singleShot(0, self._refresh_photo_display)
         QTimer.singleShot(0, self._sync_login_button_widths)
 
@@ -219,7 +254,17 @@ class IntroPage(QWizardPage):
             wizard.next()
 
     def _show_login_error(self) -> None:
-        QMessageBox.warning(self, "登录失败", "账号密码错误")
+        _show_message_box(self, title="登录失败", text="账号密码错误", icon=QMessageBox.Icon.Warning)
+
+    def _load_quote_and_photo(self) -> None:
+        quote_text, _author_name, photo_path = _load_quote_content()
+        self._quote_label.setText(
+            '<div style="margin: 0; line-height: 1.2; white-space: pre-wrap;">'
+            f"{escape(f'　　{quote_text}')}"
+            "</div>"
+        )
+        self._photo_path = photo_path
+        self._apply_photo()
 
     def _exit_program(self) -> None:
         app = QApplication.instance()

@@ -16,6 +16,8 @@ def export_questions_to_markdown(
     export_date: date,
     questions: list[Question],
     convertible_multi_mode: str = "keep_combo",
+    include_answers: bool = True,
+    include_analysis: bool = True,
 ) -> str:
     lines: list[str] = []
 
@@ -45,22 +47,32 @@ def export_questions_to_markdown(
     if lines and lines[-1] == "":
         lines.pop()
 
-    lines.append("")
-    lines.append("## 答案与解析")
-    lines.append("")
-
-    for q in normalized:
-        answer = q.answer.strip()
-        lines.append(f"**{q.number}. {answer}**".rstrip())
-
-        analysis_lines = [
-            s for s in _split_lines(_normalize_breaks(q.analysis)) if s.strip()
-        ]
-        lines.extend(analysis_lines)
+    if include_answers or include_analysis:
+        lines.append("")
+        if include_answers and include_analysis:
+            lines.append("## 答案与解析")
+        elif include_answers:
+            lines.append("## 答案")
+        else:
+            lines.append("## 解析")
         lines.append("")
 
-    if lines and lines[-1] == "":
-        lines.pop()
+        for q in normalized:
+            row_parts: list[str] = [q.number.strip()]
+            if include_answers:
+                row_parts.append(q.answer.strip())
+            header_text = ". ".join(part for part in row_parts if part).strip()
+            if header_text:
+                lines.append(f"**{header_text}**")
+            if include_analysis:
+                analysis_lines = [
+                    s for s in _split_lines(_normalize_breaks(q.analysis)) if s.strip()
+                ]
+                lines.extend(analysis_lines)
+            lines.append("")
+
+        if lines and lines[-1] == "":
+            lines.pop()
 
     return "\n".join(lines) + "\n"
 

@@ -4,11 +4,14 @@ from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QWizard
 
 from sj_generator.ui.constants import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
     PAGE_AI_ANALYSIS,
     PAGE_AI_IMPORT,
     PAGE_AI_SELECT,
     PAGE_DEDUPE_RESULT,
     PAGE_IMPORT_SUCCESS,
+    QT_MAX_WINDOW_SIZE,
 )
 from sj_generator.ui.pages.analysis_pages import AiAnalysisPage
 from sj_generator.ui.pages.dedupe_pages import DedupeResultPage
@@ -16,9 +19,8 @@ from sj_generator.ui.pages.export_pages import ImportSuccessPage
 from sj_generator.ui.pages.import_pages import AiImportPage, AiSelectFilesPage
 from sj_generator.ui.state import WizardState
 
-DEFAULT_WINDOW_WIDTH = 976
-DEFAULT_WINDOW_HEIGHT = 575
-QT_MAX_WINDOW_SIZE = 16777215
+BUTTON_MIN_WIDTH = 128
+BUTTON_MIN_HEIGHT = 40
 
 
 def configure_import_flow_pages(wizard: QWizard, state: WizardState) -> None:
@@ -44,16 +46,20 @@ class ImportFlowWizard(QWizard):
         ]
         self.setButtonLayout(self._default_button_layout)
         self.setButtonText(QWizard.WizardButton.BackButton, "上一步")
-        self.setButtonText(QWizard.WizardButton.NextButton, "下一步")
-        self.setButtonText(QWizard.WizardButton.CancelButton, "取消")
+        self.setButtonText(QWizard.WizardButton.NextButton, "开始导题")
+        self.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
         self.setButtonText(QWizard.WizardButton.FinishButton, "完成")
         configure_import_flow_pages(self, self._state)
         self._cache_and_hide_page_titles()
         self.setStartId(PAGE_AI_SELECT)
         self.currentIdChanged.connect(self._update_window_title)
         self.currentIdChanged.connect(self._sync_window_resizability)
+        self.currentIdChanged.connect(self._style_navigation_buttons)
+        self.currentIdChanged.connect(self._sync_page_navigation_buttons)
         self._update_window_title(self.startId())
         self._sync_window_resizability(self.startId())
+        self._style_navigation_buttons(self.startId())
+        self._sync_page_navigation_buttons(self.startId())
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 
     def _cache_and_hide_page_titles(self) -> None:
@@ -70,6 +76,25 @@ class ImportFlowWizard(QWizard):
     def _sync_window_resizability(self, _page_id: int) -> None:
         self.setMinimumSize(0, 0)
         self.setMaximumSize(QT_MAX_WINDOW_SIZE, QT_MAX_WINDOW_SIZE)
+
+    def _style_navigation_buttons(self, _page_id: int) -> None:
+        for which in (
+            QWizard.WizardButton.BackButton,
+            QWizard.WizardButton.NextButton,
+            QWizard.WizardButton.FinishButton,
+            QWizard.WizardButton.CancelButton,
+        ):
+            button = self.button(which)
+            if button is None:
+                continue
+            button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+            button.setStyleSheet("padding: 6px 18px;")
+
+    def _sync_page_navigation_buttons(self, _page_id: int) -> None:
+        page = self.currentPage()
+        sync = getattr(page, "_sync_wizard_buttons", None)
+        if callable(sync):
+            sync()
 
     def accept(self) -> None:
         super().accept()

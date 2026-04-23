@@ -45,6 +45,46 @@ COL_ANSWER = 3
 COL_CHOICE_SUMMARY = 4
 COL_ANALYSIS = 5
 COL_ELAPSED = 6
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button: QPushButton | None, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
 
 
 def _analysis_provider_label(provider: str) -> str:
@@ -93,12 +133,12 @@ def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool
 
     questions = list(state.draft_questions)
     if not questions:
-        QMessageBox.warning(page, "无法导入数据库", "当前草稿为空，无法写入数据库。")
+        _show_message_box(page, title="无法导入数据库", text="当前草稿为空，无法写入数据库。", icon=QMessageBox.Icon.Warning)
         return False
 
     level_path = state.ai_import_level_path.strip()
     if not level_path:
-        QMessageBox.warning(page, "无法导入数据库", "未填写层级归属，无法写入数据库。")
+        _show_message_box(page, title="无法导入数据库", text="未填写层级归属，无法写入数据库。", icon=QMessageBox.Icon.Warning)
         return False
 
     try:
@@ -111,7 +151,7 @@ def _commit_draft_questions_to_db(page: QWizardPage, state: WizardState) -> bool
         )
     except Exception as e:
         state.db_import_error = str(e)
-        QMessageBox.critical(page, "导入数据库失败", str(e))
+        _show_message_box(page, title="导入数据库失败", text=str(e), icon=QMessageBox.Icon.Critical)
         return False
 
     state.mark_db_import_completed(count)
@@ -171,6 +211,7 @@ class AiAnalysisPage(QWizardPage):
         self._refresh_status()
 
     def initializePage(self) -> None:
+        self._sync_wizard_buttons()
         self._thread = None
         self._worker = None
         self._running = False
@@ -190,6 +231,19 @@ class AiAnalysisPage(QWizardPage):
 
     def nextId(self) -> int:
         return PAGE_IMPORT_SUCCESS
+
+    def _sync_wizard_buttons(self) -> None:
+        wizard = self.wizard()
+        if not isinstance(wizard, QWizard):
+            return
+        next_text = "开始生成解析"
+        if self._running:
+            next_text = "生成中…"
+        elif self._done and not self._running:
+            next_text = "写入题库"
+        wizard.setButtonText(QWizard.WizardButton.BackButton, "返回查重")
+        wizard.setButtonText(QWizard.WizardButton.NextButton, next_text)
+        wizard.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
 
     def isComplete(self) -> bool:
         return self._done and (not self._running)
@@ -247,9 +301,7 @@ class AiAnalysisPage(QWizardPage):
         self._completed_task_count = 0
         self._progress.setRange(0, len(self._tasks) if self._tasks else 0)
         self._progress.setValue(0)
-        w = self.wizard()
-        if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+        self._sync_wizard_buttons()
         if not self._tasks:
             self._status_label.setText("无需生成解析。")
             self._current_label.setText("")
@@ -260,9 +312,7 @@ class AiAnalysisPage(QWizardPage):
             self._current_label.setText("")
 
     def cleanupPage(self) -> None:
-        w = self.wizard()
-        if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+        self._sync_wizard_buttons()
 
     def _start_generation(self) -> None:
         if self._running or self._done:
@@ -297,11 +347,9 @@ class AiAnalysisPage(QWizardPage):
             )
 
         if not cfg.is_ready():
-            QMessageBox.warning(self, "未配置", f"请先完成 {provider_label} 配置。")
+            _show_message_box(self, title="未配置", text=f"请先完成 {provider_label} 配置。", icon=QMessageBox.Icon.Warning)
             self._status_label.setText("未配置：无法开始生成解析。")
-            w = self.wizard()
-            if isinstance(w, QWizard):
-                w.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+            self._sync_wizard_buttons()
             self.completeChanged.emit()
             return
 
@@ -328,9 +376,7 @@ class AiAnalysisPage(QWizardPage):
         self._progress.setValue(0)
         self._status_label.setText(f"批量生成：准备开始…（模型：{_analysis_target_text(provider, model_name)}）")
         self._current_label.setText("")
-        w = self.wizard()
-        if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.NextButton, "生成中…")
+        self._sync_wizard_buttons()
 
         thread = QThread(self)
         worker = _AiAnalysisWorker(
@@ -375,7 +421,12 @@ class AiAnalysisPage(QWizardPage):
         self._stop_btn.setEnabled(False)
         self._status_label.setText("正在停止…")
         self._current_label.setText("")
-        QMessageBox.information(self, "正在停止", "当前解析线程仍在收尾，请稍候片刻后再关闭窗口。")
+        _show_message_box(
+            self,
+            title="正在停止",
+            text="当前解析线程仍在收尾，请稍候片刻后再关闭窗口。",
+            icon=QMessageBox.Icon.Information,
+        )
         return False
 
     def _on_batch_progress(self, cur: int, total: int) -> None:
@@ -469,13 +520,11 @@ class AiAnalysisPage(QWizardPage):
         self._worker = None
         self._current_label.setText("")
         self._refresh_status()
-        w = self.wizard()
-        if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _on_batch_error(self, msg: str) -> None:
-        QMessageBox.critical(self, "生成失败", msg)
+        _show_message_box(self, title="生成失败", text=msg, icon=QMessageBox.Icon.Critical)
         self._status_label.setText("生成失败。")
         self._current_label.setText("")
         self._running = False
@@ -487,9 +536,7 @@ class AiAnalysisPage(QWizardPage):
         self._completed_task_count = 0
         self._total_task_count = len(self._tasks)
         self._refresh_status()
-        w = self.wizard()
-        if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _retry(self) -> None:

@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -31,6 +33,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
+    QWizard,
     QWizardPage,
 )
 
@@ -52,6 +55,47 @@ from sj_generator.ui.state import AiSourceFileItem, WizardState, normalize_ai_co
 from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_AI_IMPORT, PAGE_DEDUPE_RESULT, PAGE_IMPORT_SUCCESS
 from sj_generator.ui.pdf_preview import DocumentPdfWebView
 from sj_generator.ui.styles import rounded_panel_stylesheet
+
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button: QPushButton | None, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
 
 
 def _sanitize_filename(name: str) -> str:
@@ -172,9 +216,11 @@ class AiSelectFilesPage(QWizardPage):
         self._import_reminder.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self._import_reminder.verticalHeader().setVisible(False)
         self._import_reminder.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._import_reminder.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._import_reminder.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self._import_reminder.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._import_reminder.setWordWrap(False)
+        self._import_reminder.cellDoubleClicked.connect(self._open_saved_doc_from_reminder)
         left_bottom_layout = QVBoxLayout()
         left_bottom_layout.addWidget(self._import_reminder, 1)
         left_bottom_panel = QWidget()
@@ -204,6 +250,10 @@ class AiSelectFilesPage(QWizardPage):
         self._preview_stack.addWidget(self._preview_pdf_view)
         self._preview_temp_dir = TemporaryDirectory(prefix="sj_doc_preview_")
         self._preview_pdf_path = Path(self._preview_temp_dir.name) / "preview.pdf"
+        self._opened_doc_sessions: dict[str, dict[str, object]] = {}
+        self._doc_refresh_timer = QTimer(self)
+        self._doc_refresh_timer.setInterval(1000)
+        self._doc_refresh_timer.timeout.connect(self._poll_opened_docs)
 
         preview_frame_layout = QVBoxLayout()
         preview_frame_layout.setContentsMargins(0, 0, 0, 0)
@@ -230,6 +280,7 @@ class AiSelectFilesPage(QWizardPage):
         self.setLayout(layout)
 
     def initializePage(self) -> None:
+        self._sync_wizard_buttons()
         if self._state.ai_source_files_text:
             paths = self._state.ai_source_files or [
                 Path(p.strip()) for p in self._state.ai_source_files_text.split(";") if p.strip()
@@ -261,28 +312,34 @@ class AiSelectFilesPage(QWizardPage):
     def validatePage(self) -> bool:
         raw = self._serialize_paths_text()
         if not raw:
-            QMessageBox.warning(self, "未选择文件", "请选择待处理的资料文件。")
+            _show_message_box(self, title="未选择文件", text="请选择待处理的资料文件。", icon=QMessageBox.Icon.Warning)
             return False
         paths = [Path(p.strip()) for p in raw.split(";") if p.strip()]
         paths = [p for p in paths if p.exists()]
         if not paths:
-            QMessageBox.warning(self, "文件不存在", "请选择存在的资料文件。")
+            _show_message_box(self, title="文件不存在", text="请选择存在的资料文件。", icon=QMessageBox.Icon.Warning)
             return False
         invalid_levels = self._find_invalid_level_paths()
         if invalid_levels:
             names = "、".join(invalid_levels)
-            QMessageBox.warning(self, "层级格式无效", f"以下文件的层级不是三级数字格式：{names}\n请输入如 3.2.2 的形式。")
+            _show_message_box(
+                self,
+                title="层级格式无效",
+                text=f"以下文件的层级不是三级数字格式：{names}\n请输入如 3.2.2 的形式。",
+                icon=QMessageBox.Icon.Warning,
+            )
             return False
         items = self._collect_table_items()
         level_paths = sorted({item.level_path.strip() for item in items if item.level_path.strip()})
         if not level_paths:
-            QMessageBox.warning(self, "未填写层级", "请在“确认导入资料”页填写层级。")
+            _show_message_box(self, title="未填写层级", text="请在“确认导入资料”页填写层级。", icon=QMessageBox.Icon.Warning)
             return False
         if len(level_paths) > 1:
-            QMessageBox.warning(
+            _show_message_box(
                 self,
-                "层级不一致",
-                "当前导入流程仅支持同一批次写入同一层级，请将本次资料的层级统一后再继续。",
+                title="层级不一致",
+                text="当前导入流程仅支持同一批次写入同一层级，请将本次资料的层级统一后再继续。",
+                icon=QMessageBox.Icon.Warning,
             )
             return False
         self._state.ai_source_files = paths
@@ -296,6 +353,14 @@ class AiSelectFilesPage(QWizardPage):
 
     def nextId(self) -> int:
         return PAGE_AI_IMPORT
+
+    def _sync_wizard_buttons(self) -> None:
+        wizard = self.wizard()
+        if not isinstance(wizard, QWizard):
+            return
+        wizard.setButtonText(QWizard.WizardButton.BackButton, "上一步")
+        wizard.setButtonText(QWizard.WizardButton.NextButton, "开始导题")
+        wizard.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
 
     def _serialize_paths_text(self) -> str:
         parts: list[str] = []
@@ -365,7 +430,12 @@ class AiSelectFilesPage(QWizardPage):
             self._files_table.blockSignals(True)
             item.setText("")
             self._files_table.blockSignals(False)
-            QMessageBox.warning(self, "层级格式无效", "层级只允许输入三级点连接的数字形式，例如 3.2.2。")
+            _show_message_box(
+                self,
+                title="层级格式无效",
+                text="层级只允许输入三级点连接的数字形式，例如 3.2.2。",
+                icon=QMessageBox.Icon.Warning,
+            )
             level_path = ""
         self._upsert_source_file_item(raw_path, version=version, level_path=level_path)
 
@@ -436,6 +506,7 @@ class AiSelectFilesPage(QWizardPage):
         for row, path in enumerate(paths):
             name_item = QTableWidgetItem(path.name)
             name_item.setToolTip(str(path))
+            name_item.setData(Qt.ItemDataRole.UserRole, str(path))
             self._import_reminder.setItem(row, 0, name_item)
             has_image, has_table, error_text = self._inspect_docx_content(path)
             if error_text:
@@ -454,6 +525,97 @@ class AiSelectFilesPage(QWizardPage):
                 self._make_import_check_item("发现" if has_table else "未发现", "found" if has_table else "clear"),
             )
         self._import_reminder.resizeRowsToContents()
+
+    def _open_saved_doc_from_reminder(self, row: int, _column: int) -> None:
+        path = self._reminder_doc_path(row)
+        if path is None:
+            return
+        if not path.exists():
+            _show_message_box(self, title="文件不存在", text=f"未找到文档：{path}", icon=QMessageBox.Icon.Warning)
+            return
+        try:
+            os.startfile(str(path))
+        except Exception as e:
+            _show_message_box(self, title="打开失败", text=f"无法打开 Word 文档：{e}", icon=QMessageBox.Icon.Critical)
+            return
+        session = {
+            "path": path,
+            "initial_mtime_ns": self._safe_mtime_ns(path),
+            "lock_seen": self._word_lock_path(path).exists(),
+            "opened_at": time.monotonic(),
+        }
+        self._opened_doc_sessions[str(path.resolve())] = session
+        if not self._doc_refresh_timer.isActive():
+            self._doc_refresh_timer.start()
+
+    def _reminder_doc_path(self, row: int) -> Path | None:
+        if row < 0 or row >= self._import_reminder.rowCount():
+            return None
+        item = self._import_reminder.item(row, 0)
+        if item is None:
+            return None
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        if not raw:
+            return None
+        return Path(str(raw))
+
+    def _safe_mtime_ns(self, path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except Exception:
+            return 0
+
+    def _word_lock_path(self, path: Path) -> Path:
+        return path.with_name(f"~${path.name}")
+
+    def _poll_opened_docs(self) -> None:
+        if not self._opened_doc_sessions:
+            self._doc_refresh_timer.stop()
+            return
+        closed_paths: list[Path] = []
+        for key, session in list(self._opened_doc_sessions.items()):
+            path = session.get("path")
+            if not isinstance(path, Path):
+                self._opened_doc_sessions.pop(key, None)
+                continue
+            lock_exists = self._word_lock_path(path).exists()
+            lock_seen = bool(session.get("lock_seen"))
+            if lock_exists:
+                session["lock_seen"] = True
+                continue
+            initial_mtime_ns = int(session.get("initial_mtime_ns") or 0)
+            modified = self._safe_mtime_ns(path) != initial_mtime_ns
+            elapsed = max(0.0, time.monotonic() - float(session.get("opened_at") or 0.0))
+            if lock_seen or (modified and elapsed >= 1.0):
+                closed_paths.append(path)
+                self._opened_doc_sessions.pop(key, None)
+        if closed_paths:
+            self._refresh_after_external_doc_edit(closed_paths)
+        if not self._opened_doc_sessions:
+            self._doc_refresh_timer.stop()
+
+    def _refresh_after_external_doc_edit(self, changed_paths: list[Path]) -> None:
+        paths = [Path(item.path) for item in self._collect_table_items()]
+        self._update_import_reminder(paths)
+        current_path = self._current_selected_path()
+        if current_path is not None:
+            self._update_preview([current_path])
+        if changed_paths:
+            changed_resolved = {path.resolve() for path in changed_paths if path.exists()}
+            for row in range(self._files_table.rowCount()):
+                item = self._files_table.item(row, 0)
+                if item is None:
+                    continue
+                raw_path = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+                if not raw_path:
+                    continue
+                try:
+                    candidate = Path(raw_path).resolve()
+                except Exception:
+                    continue
+                if candidate in changed_resolved:
+                    self._files_table.selectRow(row)
+                    break
 
     def _make_import_check_item(self, text: str, state: str) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
@@ -522,6 +684,7 @@ class AiImportPage(QWizardPage):
         super().__init__()
         self._state = state
         self.setTitle("AI 解析详情")
+        self._detail_row_resize_pending = False
 
         self._files_edit = QLineEdit()
         self._files_edit.setReadOnly(True)
@@ -589,7 +752,6 @@ class AiImportPage(QWizardPage):
         self._consistency_text = ""
         self._detail_row_map = {}
         self._compare_secs: dict[int, dict[str, dict[int, int]]] = {}
-        self._detail_row_resize_pending = False
         self._deepseek_ready = False
         self._qwen_ready = False
         self._kimi_ready = False
@@ -598,6 +760,7 @@ class AiImportPage(QWizardPage):
         self._cur_round_no = "-"
 
     def initializePage(self) -> None:
+        self._sync_wizard_buttons()
         self._files_edit.setText(self._state.ai_source_files_text)
         if self._state.ai_source_files:
             self._cur_source_name = self._state.ai_source_files[0].name
@@ -623,6 +786,26 @@ class AiImportPage(QWizardPage):
             return PAGE_DEDUPE_RESULT
         return PAGE_AI_ANALYSIS if self._state.analysis_enabled else PAGE_IMPORT_SUCCESS
 
+    def _sync_wizard_buttons(self) -> None:
+        wizard = self.wizard()
+        if not isinstance(wizard, QWizard):
+            return
+        next_text = "开始导题"
+        if self._running:
+            next_text = "解析中…"
+        elif self._failed:
+            next_text = "重试后继续"
+        elif self._items:
+            if self._state.dedupe_enabled:
+                next_text = "进入查重"
+            elif self._state.analysis_enabled:
+                next_text = "进入解析"
+            else:
+                next_text = "写入题库"
+        wizard.setButtonText(QWizard.WizardButton.BackButton, "返回资料")
+        wizard.setButtonText(QWizard.WizardButton.NextButton, next_text)
+        wizard.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
+
     def isComplete(self) -> bool:
         if self._running or self._failed:
             return False
@@ -634,7 +817,7 @@ class AiImportPage(QWizardPage):
         if self._running:
             return False
         if not self._items:
-            QMessageBox.warning(self, "暂无结果", "当前没有可进入下一步的题目。")
+            _show_message_box(self, title="暂无结果", text="当前没有可进入下一步的题目。", icon=QMessageBox.Icon.Warning)
             return False
         self._state.ai_import_questions = list(self._items)
         self._state.draft_questions = list(self._items)
@@ -651,7 +834,7 @@ class AiImportPage(QWizardPage):
 
         paths = self._state.ai_source_files or []
         if not paths:
-            QMessageBox.warning(self, "未选择文件", "请先选择待处理的资料文件。")
+            _show_message_box(self, title="未选择文件", text="请先选择待处理的资料文件。", icon=QMessageBox.Icon.Warning)
             return
 
         cfg = load_deepseek_config()
@@ -662,7 +845,13 @@ class AiImportPage(QWizardPage):
         self._qwen_ready = qwen_cfg.is_ready()
         self._render_status()
         if not cfg.is_ready():
-            QMessageBox.warning(self, "未配置", "DeepSeek 未配置：请先在配置文件中填写 API Key。")
+            self._sync_wizard_buttons()
+            _show_message_box(
+                self,
+                title="未配置",
+                text="DeepSeek 未配置：请先在配置文件中填写 API Key。",
+                icon=QMessageBox.Icon.Warning,
+            )
             return
 
         self._status_label.setText("正在解析，请稍候…")
@@ -675,6 +864,7 @@ class AiImportPage(QWizardPage):
         self._stopped = False
         self._finished = False
         self._failed = False
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
         thread = QThread(self)
@@ -788,7 +978,7 @@ class AiImportPage(QWizardPage):
         self._render_status()
 
     def _schedule_detail_row_resize(self) -> None:
-        if self._detail_row_resize_pending:
+        if getattr(self, "_detail_row_resize_pending", False):
             return
         self._detail_row_resize_pending = True
         QTimer.singleShot(0, self._resize_detail_rows_to_contents)
@@ -911,10 +1101,11 @@ class AiImportPage(QWizardPage):
         self._thread = None
         self._worker = None
         self._render_status()
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _on_error(self, msg: str) -> None:
-        QMessageBox.critical(self, "解析失败", msg)
+        _show_message_box(self, title="解析失败", text=msg, icon=QMessageBox.Icon.Critical)
         self._phase_text = "解析失败。"
         self._detail_text = msg
         self._stop_btn.setEnabled(False)
@@ -924,6 +1115,7 @@ class AiImportPage(QWizardPage):
         self._thread = None
         self._worker = None
         self._render_status()
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _stop(self) -> None:
@@ -933,6 +1125,7 @@ class AiImportPage(QWizardPage):
             self._phase_text = "正在停止…"
             self._stopped = True
             self._render_status()
+            self._sync_wizard_buttons()
             self.completeChanged.emit()
 
     def prepare_to_close(self) -> bool:
@@ -945,7 +1138,12 @@ class AiImportPage(QWizardPage):
         self._phase_text = "正在停止…"
         self._stopped = True
         self._render_status()
-        QMessageBox.information(self, "正在停止", "解析线程仍在收尾，请稍候片刻后再关闭窗口。")
+        _show_message_box(
+            self,
+            title="正在停止",
+            text="解析线程仍在收尾，请稍候片刻后再关闭窗口。",
+            icon=QMessageBox.Icon.Information,
+        )
         return False
 
     def _retry(self) -> None:
@@ -966,6 +1164,7 @@ class AiImportPage(QWizardPage):
         self._failed = False
         self._retry_btn.setEnabled(False)
         self._render_status()
+        self._sync_wizard_buttons()
         self.completeChanged.emit()
         QTimer.singleShot(0, self._start_import)
 

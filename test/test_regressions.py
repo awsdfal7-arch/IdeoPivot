@@ -24,6 +24,8 @@ from sj_generator.ui.state import (
     normalize_ai_concurrency,
     normalize_analysis_model_name,
     normalize_analysis_provider,
+    normalize_export_include_answers,
+    normalize_export_include_analysis,
 )
 
 
@@ -161,6 +163,8 @@ def test_program_settings_persist_round_trip(monkeypatch, tmp_path) -> None:
             "analysis_provider": "kimi",
             "analysis_model_name": "kimi-k2-turbo-preview",
             "export_convertible_multi_mode": "as_multi",
+            "export_include_answers": False,
+            "export_include_analysis": True,
             "preferred_textbook_version": "必修二",
         }
     )
@@ -173,8 +177,17 @@ def test_program_settings_persist_round_trip(monkeypatch, tmp_path) -> None:
         "analysis_provider": "kimi",
         "analysis_model_name": "kimi-k2-turbo-preview",
         "export_convertible_multi_mode": "as_multi",
+        "export_include_answers": False,
+        "export_include_analysis": True,
         "preferred_textbook_version": "必修二",
     }
+
+
+def test_normalize_export_include_defaults_true() -> None:
+    assert normalize_export_include_answers(None) is True
+    assert normalize_export_include_answers(False) is False
+    assert normalize_export_include_analysis(None) is True
+    assert normalize_export_include_analysis(False) is False
 
 
 def test_welcome_table_font_point_size_persists_round_trip(monkeypatch, tmp_path) -> None:
@@ -194,9 +207,55 @@ def test_draft_questions_to_db_records_applies_textbook_version_preference() -> 
     assert records[0].textbook_version == "必修三"
 
 
+def test_export_questions_to_markdown_can_skip_answers_and_analysis() -> None:
+    markdown = export_questions_to_markdown(
+        excel_file_name="必修三",
+        export_date=date(2026, 4, 22),
+        questions=[
+            Question(
+                number="1",
+                stem="测试题目",
+                options="A. 选项一\nB. 选项二",
+                answer="A",
+                analysis="测试解析",
+            )
+        ],
+        include_answers=False,
+        include_analysis=False,
+    )
+
+    assert "## 答案与解析" not in markdown
+    assert "测试解析" not in markdown
+    assert " 1. 测试题目（ ）" in markdown
+
+
+def test_export_questions_to_markdown_can_export_analysis_only() -> None:
+    markdown = export_questions_to_markdown(
+        excel_file_name="必修三",
+        export_date=date(2026, 4, 22),
+        questions=[
+            Question(
+                number="1",
+                stem="测试题目",
+                options="A. 选项一\nB. 选项二",
+                answer="A",
+                analysis="测试解析",
+            )
+        ],
+        include_answers=False,
+        include_analysis=True,
+    )
+
+    assert "## 解析" in markdown
+    assert "测试解析" in markdown
+    assert "**1**" in markdown
+    assert "**1. A**" not in markdown
+
+
 def test_deepseek_analysis_model_defaults_and_persists(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.delenv("SJ_GENERATOR_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_ANALYSIS_MODEL", raising=False)
 
     cfg = cfg_mod.load_deepseek_config()

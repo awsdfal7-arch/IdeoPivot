@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -22,12 +24,17 @@ from sj_generator.ui.state import (
     AI_CONCURRENCY_OPTIONS,
     WizardState,
     normalize_export_convertible_multi_mode,
+    normalize_export_include_answers,
+    normalize_export_include_analysis,
     normalize_default_repo_parent_dir_text,
+    normalize_import_source_dir_text,
     normalize_ai_concurrency,
     normalize_analysis_model_name,
     normalize_analysis_provider,
     normalize_preferred_textbook_version,
     library_db_path_from_repo_parent_dir_text,
+    default_import_source_dir,
+    desktop_import_source_dir,
 )
 from sj_generator.io.sqlite_repo import load_all_questions
 
@@ -40,6 +47,46 @@ _ANALYSIS_TARGET_CANDIDATES = [
 SECTION_GENERAL = "general"
 SECTION_IMPORT = "import"
 SECTION_EXPORT = "export"
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button: QPushButton | None, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
 
 
 def _analysis_provider_label(provider: str) -> str:
@@ -158,6 +205,7 @@ class ProgramSettingsDialog(QDialog):
             _analysis_target_text(self._state.analysis_provider, self._state.analysis_model_name)
         )
         self._analysis_test_btn = QPushButton("测试解析模型")
+        self._analysis_test_btn.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         self._analysis_test_btn.clicked.connect(self._on_test_analysis_target)
         self._analysis_status = QLabel("未测试")
         self._analysis_status.setWordWrap(True)
@@ -184,6 +232,14 @@ class ProgramSettingsDialog(QDialog):
         )
         if export_idx >= 0:
             self._convertible_multi_export_combo.setCurrentIndex(export_idx)
+        self._export_include_answers_checkbox = QCheckBox("包含答案")
+        self._export_include_answers_checkbox.setChecked(
+            normalize_export_include_answers(self._state.export_include_answers)
+        )
+        self._export_include_analysis_checkbox = QCheckBox("包含解析")
+        self._export_include_analysis_checkbox.setChecked(
+            normalize_export_include_analysis(self._state.export_include_analysis)
+        )
 
         self._default_repo_parent_dir_edit = QLineEdit()
         self._default_repo_parent_dir_edit.setText(
@@ -191,6 +247,7 @@ class ProgramSettingsDialog(QDialog):
         )
         self._default_repo_parent_dir_edit.setPlaceholderText("例如：C:/Users/你的用户名/Desktop/思政题库")
         self._default_repo_parent_dir_browse_btn = QPushButton("选择…")
+        self._default_repo_parent_dir_browse_btn.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         self._default_repo_parent_dir_browse_btn.clicked.connect(self._browse_default_repo_parent_dir)
         self._preferred_textbook_version_combo = QComboBox()
         self._preferred_textbook_version_combo.setEditable(True)
@@ -200,6 +257,19 @@ class ProgramSettingsDialog(QDialog):
         self._preferred_textbook_version_combo.setCurrentText(
             normalize_preferred_textbook_version(self._state.preferred_textbook_version)
         )
+        self._import_source_dir_preset_combo = QComboBox()
+        self._import_source_dir_preset_combo.addItem("下载", "downloads")
+        self._import_source_dir_preset_combo.addItem("桌面", "desktop")
+        self._import_source_dir_preset_combo.addItem("自定义", "custom")
+        self._import_source_dir_edit = QLineEdit()
+        self._import_source_dir_edit.setText(
+            normalize_import_source_dir_text(self._state.import_source_dir_text)
+        )
+        self._import_source_dir_edit.setPlaceholderText("例如：C:/Users/你的用户名/Downloads")
+        self._import_source_dir_browse_btn = QPushButton("选择…")
+        self._import_source_dir_browse_btn.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+        self._import_source_dir_browse_btn.clicked.connect(self._browse_import_source_dir)
+        self._apply_import_source_dir_preset_from_text(self._import_source_dir_edit.text())
 
         analysis_row = QHBoxLayout()
         analysis_row.addWidget(self._analysis_target_combo, 1)
@@ -208,6 +278,10 @@ class ProgramSettingsDialog(QDialog):
         default_repo_row = QHBoxLayout()
         default_repo_row.addWidget(self._default_repo_parent_dir_edit, 1)
         default_repo_row.addWidget(self._default_repo_parent_dir_browse_btn)
+        import_source_dir_row = QHBoxLayout()
+        import_source_dir_row.addWidget(self._import_source_dir_preset_combo)
+        import_source_dir_row.addWidget(self._import_source_dir_edit, 1)
+        import_source_dir_row.addWidget(self._import_source_dir_browse_btn)
 
         form = QFormLayout()
         if self._section == SECTION_GENERAL:
@@ -215,17 +289,22 @@ class ProgramSettingsDialog(QDialog):
             form.addRow("题目版本首选项：", self._preferred_textbook_version_combo)
         elif self._section == SECTION_IMPORT:
             form.addRow("统一并发数：", self._concurrency_combo)
+            form.addRow("默认导入目录：", import_source_dir_row)
             form.addRow("导入文档时解析生成：", self._import_analysis_combo)
             form.addRow("", self._dedupe_checkbox)
             form.addRow("解析生成模型：", analysis_row)
             form.addRow("", self._analysis_status)
         else:
             form.addRow("可转多选 Markdown 导出：", self._convertible_multi_export_combo)
+            form.addRow("导出 Markdown/PDF：", self._export_include_answers_checkbox)
+            form.addRow("", self._export_include_analysis_checkbox)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
+        _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Ok), "确定")
+        _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Cancel), "取消")
 
         layout = QVBoxLayout()
         layout.addLayout(form)
@@ -233,12 +312,19 @@ class ProgramSettingsDialog(QDialog):
         self.setLayout(layout)
 
         self._analysis_target_combo.currentTextChanged.connect(self._reset_analysis_tested)
+        self._import_source_dir_preset_combo.currentIndexChanged.connect(self._on_import_source_dir_preset_changed)
+        self._import_source_dir_edit.textChanged.connect(self._on_import_source_dir_text_changed)
         if self._section == SECTION_IMPORT and self._analysis_tested_key:
             self._analysis_status.setText("当前解析生成模型配置已就绪。")
 
     def _on_accept(self) -> None:
         if self._section == SECTION_IMPORT and self._analysis_testing:
-            QMessageBox.information(self, "测试中", "解析生成模型正在测试，请等待测试完成后再保存。")
+            _show_message_box(
+                self,
+                title="测试中",
+                text="解析生成模型正在测试，请等待测试完成后再保存。",
+                icon=QMessageBox.Icon.Information,
+            )
             return
         if self._section == SECTION_GENERAL:
             self._state.default_repo_parent_dir_text = normalize_default_repo_parent_dir_text(
@@ -250,9 +336,15 @@ class ProgramSettingsDialog(QDialog):
         elif self._section == SECTION_IMPORT:
             provider, model_name = self._current_analysis_target()
             if self._analysis_target_key(provider, model_name) != self._analysis_tested_key:
-                QMessageBox.warning(self, "配置未完成", "解析生成模型已修改，请先点击“测试解析模型”并通过。")
+                _show_message_box(
+                    self,
+                    title="配置未完成",
+                    text="解析生成模型已修改，请先点击“测试解析模型”并通过。",
+                    icon=QMessageBox.Icon.Warning,
+                )
                 return
             self._state.ai_concurrency = normalize_ai_concurrency(self._concurrency_combo.currentData())
+            self._state.import_source_dir_text = normalize_import_source_dir_text(self._import_source_dir_edit.text())
             self._state.analysis_enabled = bool(self._import_analysis_combo.currentData())
             self._state.dedupe_enabled = self._dedupe_checkbox.isChecked()
             self._state.analysis_provider = provider
@@ -262,6 +354,12 @@ class ProgramSettingsDialog(QDialog):
         else:
             self._state.export_convertible_multi_mode = normalize_export_convertible_multi_mode(
                 self._convertible_multi_export_combo.currentData()
+            )
+            self._state.export_include_answers = normalize_export_include_answers(
+                self._export_include_answers_checkbox.isChecked()
+            )
+            self._state.export_include_analysis = normalize_export_include_analysis(
+                self._export_include_analysis_checkbox.isChecked()
             )
         self._save_program_settings()
         self.accept()
@@ -279,6 +377,9 @@ class ProgramSettingsDialog(QDialog):
                 "default_repo_parent_dir_text": normalize_default_repo_parent_dir_text(
                     self._state.default_repo_parent_dir_text
                 ),
+                "import_source_dir_text": normalize_import_source_dir_text(
+                    self._state.import_source_dir_text
+                ),
                 "ai_concurrency": normalize_ai_concurrency(self._state.ai_concurrency),
                 "analysis_enabled": bool(self._state.analysis_enabled),
                 "dedupe_enabled": bool(self._state.dedupe_enabled),
@@ -287,6 +388,8 @@ class ProgramSettingsDialog(QDialog):
                 "export_convertible_multi_mode": normalize_export_convertible_multi_mode(
                     self._state.export_convertible_multi_mode
                 ),
+                "export_include_answers": normalize_export_include_answers(self._state.export_include_answers),
+                "export_include_analysis": normalize_export_include_analysis(self._state.export_include_analysis),
                 "preferred_textbook_version": normalize_preferred_textbook_version(
                     self._state.preferred_textbook_version
                 ),
@@ -329,7 +432,12 @@ class ProgramSettingsDialog(QDialog):
         provider_label, llm_config = _build_analysis_llm_config(provider, model_name)
         if provider_label is None or llm_config is None:
             provider_label = _analysis_provider_label(provider)
-            QMessageBox.warning(self, "未配置", f"请先完成 {provider_label} 的 API 配置。")
+            _show_message_box(
+                self,
+                title="未配置",
+                text=f"请先完成 {provider_label} 的 API 配置。",
+                icon=QMessageBox.Icon.Warning,
+            )
             self._analysis_status.setText("最近一次测试失败。")
             return
         self._set_analysis_testing(True, f"正在测试：{provider_label} / {model_name}")
@@ -371,16 +479,67 @@ class ProgramSettingsDialog(QDialog):
         if folder:
             self._default_repo_parent_dir_edit.setText(folder)
 
+    def _import_source_dir_for_preset(self, preset: str) -> str:
+        if preset == "desktop":
+            return str(desktop_import_source_dir())
+        return str(default_import_source_dir())
+
+    def _apply_import_source_dir_preset_from_text(self, text: str) -> None:
+        normalized = str(Path(normalize_import_source_dir_text(text))).strip().lower()
+        downloads = str(default_import_source_dir()).strip().lower()
+        desktop = str(desktop_import_source_dir()).strip().lower()
+        if normalized == downloads:
+            preset = "downloads"
+        elif normalized == desktop:
+            preset = "desktop"
+        else:
+            preset = "custom"
+        index = self._import_source_dir_preset_combo.findData(preset)
+        if index >= 0:
+            self._import_source_dir_preset_combo.blockSignals(True)
+            self._import_source_dir_preset_combo.setCurrentIndex(index)
+            self._import_source_dir_preset_combo.blockSignals(False)
+
+    def _on_import_source_dir_preset_changed(self) -> None:
+        preset = str(self._import_source_dir_preset_combo.currentData() or "downloads")
+        if preset == "custom":
+            return
+        self._import_source_dir_edit.setText(self._import_source_dir_for_preset(preset))
+
+    def _on_import_source_dir_text_changed(self, text: str) -> None:
+        self._apply_import_source_dir_preset_from_text(text)
+
+    def _browse_import_source_dir(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "选择默认导入目录",
+            normalize_import_source_dir_text(self._import_source_dir_edit.text()),
+        )
+        if not folder:
+            return
+        self._import_source_dir_edit.setText(folder)
+        self._apply_import_source_dir_preset_from_text(folder)
+
     def _on_analysis_test_passed(self, provider_label: str, model_name: str) -> None:
         provider, normalized_model = _parse_analysis_target_text(f"{provider_label} / {model_name}")
         self._analysis_target_combo.setCurrentText(_analysis_target_text(provider, normalized_model))
         self._analysis_tested_key = self._analysis_target_key(provider, normalized_model)
         self._analysis_status.setText(f"解析生成模型测试通过：{provider_label} / {normalized_model}")
-        QMessageBox.information(self, "测试通过", f"{provider_label} / {normalized_model} 可用于解析生成。")
+        _show_message_box(
+            self,
+            title="测试通过",
+            text=f"{provider_label} / {normalized_model} 可用于解析生成。",
+            icon=QMessageBox.Icon.Information,
+        )
 
     def _on_analysis_test_failed(self, message: str) -> None:
         self._analysis_status.setText("最近一次测试失败。")
-        QMessageBox.critical(self, "测试失败", message)
+        _show_message_box(
+            self,
+            title="测试失败",
+            text=message,
+            icon=QMessageBox.Icon.Critical,
+        )
 
     def _on_analysis_test_finished(self) -> None:
         self._set_analysis_testing(False)
@@ -389,6 +548,11 @@ class ProgramSettingsDialog(QDialog):
 
     def reject(self) -> None:
         if self._analysis_testing:
-            QMessageBox.information(self, "测试中", "解析生成模型正在测试，请等待测试完成后再关闭窗口。")
+            _show_message_box(
+                self,
+                title="测试中",
+                text="解析生成模型正在测试，请等待测试完成后再关闭窗口。",
+                icon=QMessageBox.Icon.Information,
+            )
             return
         super().reject()

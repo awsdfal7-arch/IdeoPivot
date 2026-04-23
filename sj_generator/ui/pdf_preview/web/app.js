@@ -550,6 +550,14 @@ function installEvents() {
   elements.scrollContainer.addEventListener("scroll", () => {
     window.requestAnimationFrame(updateCurrentPage);
   });
+  const preventCtrlWheelZoom = (event) => {
+    if (!event.ctrlKey) {
+      return;
+    }
+    event.preventDefault();
+  };
+  elements.scrollContainer.addEventListener("wheel", preventCtrlWheelZoom, { passive: false });
+  document.addEventListener("wheel", preventCtrlWheelZoom, { passive: false });
   document.addEventListener("mouseup", scheduleSelectionSync);
   document.addEventListener("keyup", scheduleSelectionSync);
 }

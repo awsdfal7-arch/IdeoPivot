@@ -5,8 +5,10 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from sj_generator.ai.client import LlmConfig
+if TYPE_CHECKING:
+    from sj_generator.ai.client import LlmConfig
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,8 @@ def save_deepseek_config(cfg: DeepSeekConfig) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def to_llm_config(cfg: DeepSeekConfig) -> LlmConfig:
+    from sj_generator.ai.client import LlmConfig
+
     return LlmConfig(
         base_url=cfg.base_url.strip(),
         api_key=cfg.api_key.strip(),
@@ -97,6 +101,8 @@ def to_llm_config(cfg: DeepSeekConfig) -> LlmConfig:
 
 
 def to_analysis_llm_config(cfg: DeepSeekConfig) -> LlmConfig:
+    from sj_generator.ai.client import LlmConfig
+
     return LlmConfig(
         base_url=cfg.base_url.strip(),
         api_key=cfg.api_key.strip(),
@@ -142,6 +148,8 @@ def save_kimi_config(cfg: KimiConfig) -> None:
 
 
 def to_kimi_llm_config(cfg: KimiConfig) -> LlmConfig:
+    from sj_generator.ai.client import LlmConfig
+
     return LlmConfig(
         base_url=_clean_base_url(cfg.base_url),
         api_key=cfg.api_key.strip(),
@@ -267,6 +275,8 @@ def save_program_settings(settings: dict) -> None:
 
 
 def to_qwen_llm_config(cfg: QwenConfig) -> LlmConfig:
+    from sj_generator.ai.client import LlmConfig
+
     return LlmConfig(
         base_url=_clean_base_url(cfg.base_url),
         api_key=cfg.api_key.strip(),

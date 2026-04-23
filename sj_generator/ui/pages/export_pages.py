@@ -29,7 +29,8 @@ class ImportSuccessPage(QWizardPage):
     def initializePage(self) -> None:
         w = self.wizard()
         if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.FinishButton, "完成")
+            w.setButtonText(QWizard.WizardButton.FinishButton, "返回开始页")
+            w.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
         count = self._state.db_import_count
         self._title.setText("导入数据库成功")
         self._hint.setText(f"本次已写入当前总库 {count} 道题。Markdown 导出请在开始界面的菜单栏中操作。")
@@ -37,7 +38,8 @@ class ImportSuccessPage(QWizardPage):
     def cleanupPage(self) -> None:
         w = self.wizard()
         if isinstance(w, QWizard):
-            w.setButtonText(QWizard.WizardButton.FinishButton, "完成")
+            w.setButtonText(QWizard.WizardButton.FinishButton, "返回开始页")
+            w.setButtonText(QWizard.WizardButton.CancelButton, "返回开始页")
 
     def nextId(self) -> int:
         return -1

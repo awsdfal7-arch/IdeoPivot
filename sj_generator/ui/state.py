@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from sj_generator.io.dedupe import DedupeHit
-from sj_generator.models import Question
+if TYPE_CHECKING:
+    from sj_generator.io.dedupe import DedupeHit
+    from sj_generator.models import Question
 
 AI_CONCURRENCY_OPTIONS = (1, 2, 3, 4, 5)
 ANALYSIS_PROVIDER_OPTIONS = ("deepseek", "kimi", "qwen")
@@ -12,6 +15,8 @@ DEFAULT_ANALYSIS_MODEL_NAME = "deepseek-reasoner"
 DEFAULT_REPO_PARENT_DIR_NAME = "思政题库"
 DEFAULT_LIBRARY_DB_FILE_NAME = "思政题库.db"
 DEFAULT_PREFERRED_TEXTBOOK_VERSION = "2026年春"
+DEFAULT_EXPORT_INCLUDE_ANSWERS = True
+DEFAULT_EXPORT_INCLUDE_ANALYSIS = True
 
 
 def normalize_ai_concurrency(value: int | None) -> int:
@@ -41,14 +46,35 @@ def default_repo_parent_dir() -> Path:
     return Path.home() / "Desktop" / DEFAULT_REPO_PARENT_DIR_NAME
 
 
+def default_import_source_dir() -> Path:
+    return Path.home() / "Downloads"
+
+
+def desktop_import_source_dir() -> Path:
+    return Path.home() / "Desktop"
+
+
 def normalize_default_repo_parent_dir_text(value: str | None) -> str:
     text = (value or "").strip()
     return text or str(default_repo_parent_dir())
 
 
+def normalize_import_source_dir_text(value: str | None) -> str:
+    text = (value or "").strip()
+    return text or str(default_import_source_dir())
+
+
 def normalize_preferred_textbook_version(value: str | None) -> str:
     text = (value or "").strip()
     return text or DEFAULT_PREFERRED_TEXTBOOK_VERSION
+
+
+def normalize_export_include_answers(value: object) -> bool:
+    return bool(DEFAULT_EXPORT_INCLUDE_ANSWERS if value is None else value)
+
+
+def normalize_export_include_analysis(value: object) -> bool:
+    return bool(DEFAULT_EXPORT_INCLUDE_ANALYSIS if value is None else value)
 
 
 def library_db_path_from_repo_parent_dir_text(value: str | None) -> Path:
@@ -81,6 +107,7 @@ class WizardState:
     dedupe_enabled: bool = True
     dedupe_threshold: float = 0.85
     default_repo_parent_dir_text: str = field(default_factory=lambda: str(default_repo_parent_dir()))
+    import_source_dir_text: str = field(default_factory=lambda: str(default_import_source_dir()))
     analysis_enabled: bool = True
     analysis_use_reference_folder: bool = True
     analysis_use_reference_md: bool = False
@@ -89,6 +116,8 @@ class WizardState:
     analysis_provider: str = "deepseek"
     analysis_model_name: str = DEFAULT_ANALYSIS_MODEL_NAME
     export_convertible_multi_mode: str = "keep_combo"
+    export_include_answers: bool = DEFAULT_EXPORT_INCLUDE_ANSWERS
+    export_include_analysis: bool = DEFAULT_EXPORT_INCLUDE_ANALYSIS
     preferred_textbook_version: str = DEFAULT_PREFERRED_TEXTBOOK_VERSION
     ai_concurrency: int = 3
     db_import_completed: bool = False

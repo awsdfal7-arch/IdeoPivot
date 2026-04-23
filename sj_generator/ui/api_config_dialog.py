@@ -35,6 +35,47 @@ from sj_generator.config import (
     to_qwen_llm_config,
 )
 
+BUTTON_MIN_WIDTH = 96
+BUTTON_MIN_HEIGHT = 36
+
+
+def _style_dialog_button(button: QPushButton | None, text: str | None = None) -> None:
+    if button is None:
+        return
+    if text:
+        button.setText(text)
+    button.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+
+
+def _style_message_box_buttons(box: QMessageBox) -> None:
+    for button_type, text in (
+        (QMessageBox.StandardButton.Ok, "确定"),
+        (QMessageBox.StandardButton.Cancel, "取消"),
+        (QMessageBox.StandardButton.Yes, "是"),
+        (QMessageBox.StandardButton.No, "否"),
+    ):
+        _style_dialog_button(box.button(button_type), text)
+
+
+def _show_message_box(
+    parent,
+    *,
+    title: str,
+    text: str,
+    icon: QMessageBox.Icon,
+    buttons: QMessageBox.StandardButton = QMessageBox.StandardButton.Ok,
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.NoButton,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStandardButtons(buttons)
+    if default_button != QMessageBox.StandardButton.NoButton:
+        box.setDefaultButton(default_button)
+    _style_message_box_buttons(box)
+    return QMessageBox.StandardButton(box.exec())
+
 
 class ApiConfigDialog(QDialog):
     def __init__(self, parent=None) -> None:
@@ -72,6 +113,8 @@ class ApiConfigDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
+        _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Ok), "确定")
+        _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Cancel), "取消")
 
         layout = QVBoxLayout()
         layout.addWidget(tabs)
@@ -84,10 +127,10 @@ class ApiConfigDialog(QDialog):
             self._kimi_tab.save_if_needed()
             self._qwen_tab.save_if_needed()
         except _ConfigValidationError as e:
-            QMessageBox.warning(self, "配置未完成", str(e))
+            _show_message_box(self, title="配置未完成", text=str(e), icon=QMessageBox.Icon.Warning)
             return
         except Exception as e:
-            QMessageBox.critical(self, "保存失败", str(e))
+            _show_message_box(self, title="保存失败", text=str(e), icon=QMessageBox.Icon.Critical)
             return
         self.accept()
 
@@ -136,6 +179,7 @@ class _ApiConfigTab(QWidget):
         self._save_checkbox = QCheckBox("保存到本机配置")
         self._save_checkbox.setChecked(True)
         self._test_btn = QPushButton("测试 API")
+        self._test_btn.setMinimumSize(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
         self._test_btn.clicked.connect(self._on_test_api)
         self._balance_label = QLabel(self._initial_balance_text(cfg))
         self._balance_label.setWordWrap(True)
@@ -225,25 +269,36 @@ class _ApiConfigTab(QWidget):
             client = LlmClient(self._to_llm_fn(cfg))
             text = client.chat_text(system="你是连通性测试助手。", user="请只返回 OK")
             if "OK" not in (text or "").upper():
-                QMessageBox.warning(self, "测试失败", f"{self._title} API 测试未通过，返回：{text}")
+                _show_message_box(
+                    self,
+                    title="测试失败",
+                    text=f"{self._title} API 测试未通过，返回：{text}",
+                    icon=QMessageBox.Icon.Warning,
+                )
                 self._status.setText("最近一次测试失败。")
                 self._balance_label.setText(self._initial_balance_text(cfg))
                 return
         except _ConfigValidationError as e:
-            QMessageBox.warning(self, "参数不合法", str(e))
+            _show_message_box(self, title="参数不合法", text=str(e), icon=QMessageBox.Icon.Warning)
             return
         except Exception as e:
-            QMessageBox.critical(self, "测试失败", f"{self._title} API 测试失败：{e}")
+            _show_message_box(
+                self,
+                title="测试失败",
+                text=f"{self._title} API 测试失败：{e}",
+                icon=QMessageBox.Icon.Critical,
+            )
             self._status.setText("最近一次测试失败。")
             self._balance_label.setText(self._initial_balance_text(cfg) if "cfg" in locals() else "余额：未查询")
             return
         self._tested_key = self._cfg_key(cfg)
         self._status.setText(f"{self._title} API 测试通过。")
         self._balance_label.setText(f"余额：{self._query_balance_text(cfg)}")
-        QMessageBox.information(
+        _show_message_box(
             self,
-            "测试通过",
-            f"{self._title} API 可用性测试通过。",
+            title="测试通过",
+            text=f"{self._title} API 可用性测试通过。",
+            icon=QMessageBox.Icon.Information,
         )
 
     def _cfg_key(self, cfg) -> str:
