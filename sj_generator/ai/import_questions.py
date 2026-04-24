@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from sj_generator.ai.client import LlmClient
+from sj_generator.ai.prompt_templates import get_import_prompt, render_import_prompt
 from sj_generator.ai.task_runner import run_tasks_in_parallel
 from sj_generator.models import Question
 
@@ -126,23 +127,28 @@ def _import_questions_per_question(
             continue
         if progress_cb:
             progress_cb(f"{path.name}：统计题数…")
-        n = _count_questions_with_fallback(
+        question_refs = _normalize_question_ref_list(
+            _get_question_number_list_verified(
             client=client,
+            kimi_client=kimi_client,
+            qwen_client=qwen_client,
             source_name=path.name,
             chunk_text=text,
             depth=3,
+            )
         )
-        if n <= 0:
+        if not question_refs:
             continue
-        total_steps = n
+        total_steps = len(question_refs)
         step = 0
         if progress_count_cb:
             progress_count_cb(0, total_steps)
         worker_count = max(1, int(max_question_workers))
         if worker_count <= 1:
-            for i in range(1, n + 1):
+            for i, question_ref in enumerate(question_refs, start=1):
                 if stop_cb and stop_cb():
                     break
+                question_number = _as_str(question_ref.get("number", ""))
                 obj, err, meta = _process_one_question(
                     client=client,
                     kimi_client=kimi_client,
@@ -150,7 +156,8 @@ def _import_questions_per_question(
                     source_name=path.name,
                     chunk_text=text,
                     index=i,
-                    total=n,
+                    total=total_steps,
+                    requested_number=question_number,
                     progress_cb=progress_cb,
                     compare_cb=compare_cb,
                     stop_cb=stop_cb,
@@ -175,30 +182,34 @@ def _import_questions_per_question(
         if client_factory is None or kimi_client_factory is None or qwen_client_factory is None:
             raise ValueError("题级并发需要提供三模型客户端工厂。")
 
-        task_items = [(i, path.name, text) for i in range(1, n + 1)]
+        task_items = [
+            (i, _as_str(question_ref.get("number", "")), path.name, text)
+            for i, question_ref in enumerate(question_refs, start=1)
+        ]
         results_by_index: dict[int, tuple[dict[str, Any], bool, dict[str, Any]]] = {}
 
-        def on_task_start(_current: int, _total_count: int, _task: tuple[int, str, str]) -> None:
+        def on_task_start(_current: int, _total_count: int, _task: tuple[int, str, str, str]) -> None:
             return
 
-        def on_task_done(task: tuple[int, str, str], result: tuple[dict[str, Any], bool, dict[str, Any]]) -> None:
+        def on_task_done(task: tuple[int, str, str, str], result: tuple[dict[str, Any], bool, dict[str, Any]]) -> None:
             nonlocal step
-            index, _source_name, _chunk_text = task
+            index, _question_number, _source_name, _chunk_text = task
             results_by_index[index] = result
             step += 1
             if progress_count_cb:
                 progress_count_cb(step, total_steps)
 
-        def on_task_failed(task: tuple[int, str, str], exc: Exception) -> None:
+        def on_task_failed(task: tuple[int, str, str, str], exc: Exception) -> None:
             nonlocal step
-            index, _source_name, _chunk_text = task
+            index, question_number, _source_name, _chunk_text = task
             results_by_index[index] = ({}, True, {"index": index, "accepted": False, "reason": str(exc)})
+            results_by_index[index][2]["requested_number"] = question_number
             step += 1
             if progress_count_cb:
                 progress_count_cb(step, total_steps)
 
-        def run_one(task: tuple[int, str, str]) -> tuple[dict[str, Any], bool, dict[str, Any]]:
-            index, source_name, chunk_text = task
+        def run_one(task: tuple[int, str, str, str]) -> tuple[dict[str, Any], bool, dict[str, Any]]:
+            index, question_number, source_name, chunk_text = task
             return _process_one_question(
                 client=client_factory(),
                 kimi_client=kimi_client_factory(),
@@ -206,7 +217,8 @@ def _import_questions_per_question(
                 source_name=source_name,
                 chunk_text=chunk_text,
                 index=index,
-                total=n,
+                total=total_steps,
+                requested_number=question_number,
                 progress_cb=progress_cb,
                 compare_cb=compare_cb,
                 stop_cb=stop_cb,
@@ -214,7 +226,7 @@ def _import_questions_per_question(
 
         run_tasks_in_parallel(
             tasks=task_items,
-            max_workers=min(worker_count, n),
+            max_workers=min(worker_count, total_steps),
             stop_cb=(stop_cb or (lambda: False)),
             on_task_start=on_task_start,
             on_task_done=on_task_done,
@@ -249,23 +261,24 @@ def _process_one_question(
     chunk_text: str,
     index: int,
     total: int,
+    requested_number: str,
     progress_cb: Callable[[str], None] | None,
     compare_cb: Callable[[dict[str, Any]], None] | None,
     stop_cb: Callable[[], bool] | None,
 ) -> tuple[dict[str, Any], bool, dict[str, Any]]:
     def bump(model_name: str, round_no: int, check_no: int) -> None:
         if progress_cb:
-            progress_cb(f"{source_name}：第 {index}/{total} 题（第 {round_no}/3 轮，{model_name}）…")
+            progress_cb(f"{source_name}：第 {index}/{total} 题（题号 {requested_number}，第 {round_no}/3 轮，{model_name}）…")
 
     def mark_round(round_no: int, status: str) -> None:
         if not progress_cb:
             return
         if status == "start":
-            progress_cb(f"{source_name}：第 {index}/{total} 题（第 {round_no}/3 轮，三模型并行请求中）")
+            progress_cb(f"{source_name}：第 {index}/{total} 题（题号 {requested_number}，第 {round_no}/3 轮，三模型并行请求中）")
         elif status == "consistent":
-            progress_cb(f"{source_name}：第 {index}/{total} 题（第 {round_no}/3 轮，达到一致阈值）")
+            progress_cb(f"{source_name}：第 {index}/{total} 题（题号 {requested_number}，第 {round_no}/3 轮，达到一致阈值）")
         elif status == "inconsistent":
-            progress_cb(f"{source_name}：第 {index}/{total} 题（第 {round_no}/3 轮，未达到一致阈值）")
+            progress_cb(f"{source_name}：第 {index}/{total} 题（题号 {requested_number}，第 {round_no}/3 轮，未达到一致阈值）")
 
     return _get_question_n_verified(
         client=client,
@@ -274,6 +287,7 @@ def _process_one_question(
         source_name=source_name,
         chunk_text=chunk_text,
         index=index,
+        requested_number=requested_number,
         depth=2,
         attempt_cb=bump,
         round_cb=mark_round,
@@ -316,35 +330,141 @@ def _collect_question_result(
 
 
 def _question_extract_prompt_rules() -> str:
-    return (
-        "你是一个题库整理助手。你必须仅输出严格 JSON，不要输出任何解释、markdown、前后缀、代码块或额外文本。\n"
-        "任务：从提供的资料文本中抽取选择题。\n"
-        "题目可能是以下三类之一：\n"
-        "- 单选：选项标识通常为 A/B/C/D 或 A. / A、 等，答案是单个选项标识。\n"
-        "- 多选：答案本身是多个选项标识的组合。\n"
-        "- 可转多选：题干或材料中先给出 ①②③④ 等若干表述，再由 A/B/C/D 表示这些表述的不同组合；这类题本质上是组合型选择题。\n"
-        "如果原文没有明确答案，answer 允许为空字符串。\n"
-        "不要生成解析，也不要输出任何解析字段。\n"
-        "字段规则必须严格遵守：\n"
-        '1. question_type 必须输出且只能是 "单选"、"多选"、"可转多选" 三者之一。\n'
-        '2. number 只保留题号本身，例如 "12"；不要保留 "第12题"、"12."、"12、"、括号等；没有明确题号时填空字符串。\n'
-        '3. stem 只保留题干正文；不要包含题号、选项、答案、解析、"答案："、"解析：" 等内容。\n'
-        '4. 选项必须拆成 option_1、option_2、option_3、option_4 四个字段分别输出；字段值只保留选项正文，不要包含 A/B/C/D/①②③④ 等标识。\n'
-        '5. answer 只保留答案标识本身；不要包含 "答案" 二字、冒号、句号、解释文字或空格。\n'
-        '6. 普通单选答案统一输出单个标识，如 A / B / C / D。\n'
-        '7. 普通多选答案统一输出紧凑组合，不加顿号、逗号、空格或斜杠，例如 ACD、ABD。\n'
-        '8. 可转多选题中，若原文先给出 ①②③④ 等表述，再给出 A/B/C/D 代表不同组合，则 option_1 到 option_4 只保留 ①②③④ 对应的四条表述本身，不保留 A/B/C/D 组合项。\n'
-        '9. 可转多选题必须额外输出 choice_1、choice_2、choice_3、choice_4 四个字段，分别对应 A、B、C、D 的组合映射；字段值只保留数字序号本身，例如 A 对应 ①②，则 choice_1 输出 "12"。\n'
-        '10. 可转多选题的 answer 必须输出正常字母答案 A/B/C/D，不要输出圆圈序号。\n'
-        "10.1 结构一致性强约束：如果 question_type 是可转多选，那么必须同时满足“option_1..option_4 为 ①②③④ 表述”“choice_1..choice_4 为数字映射”“answer 为 A/B/C/D”。\n"
-        "11. 如果原文出现材料、案例或引导语，且该内容属于该题题干的一部分，应保留在 stem 中。\n"
-        "12. 不要凭空编造不存在的题目、选项或答案；无法确定时宁可留空，也不要猜测。\n"
-        "13. 如遇图片题、表格题或信息缺失题，只提取文本中能够明确确认的内容。\n"
-        "如果题目出现“组合选项”形式（例如先给出 ①②③④ 四个表述，然后给出 A/B/C/D 代表不同组合，如“ A．①② B．①④ … ”），请按以下方式转换：\n"
-        "- option_1 到 option_4 只输出 ①②③④ 对应的每条表述（不要包含 A/B/C/D 这些组合项）\n"
-        '- question_type 必须输出为 "可转多选"\n'
-        '- choice_1 到 choice_4 分别输出 A 到 D 对应的数字映射，例如 A．①② 则 choice_1 输出 "12"\n'
-        "- answer 必须输出正确选项字母，例如 B\n"
+    return get_import_prompt("question_extract_system")
+
+
+def _question_number_list_prompt_rules() -> str:
+    return get_import_prompt("question_number_list_system")
+
+
+def _normalize_question_ref_list(data: object) -> list[dict[str, str]]:
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in data:
+        if isinstance(item, dict):
+            number = _as_str(item.get("number", ""))
+            question_type = _normalize_question_type_text(_as_str(item.get("question_type", "")))
+        else:
+            number = _as_str(item)
+            question_type = ""
+        if not number or number in seen:
+            continue
+        seen.add(number)
+        row = {"number": number}
+        if question_type:
+            row["question_type"] = question_type
+        out.append(row)
+    return out
+
+
+def _normalize_question_type_text(value: str) -> str:
+    text = _normalize_text(value)
+    if "可转多选" in text:
+        return "可转多选"
+    if "多选" in text:
+        return "多选"
+    if "单选" in text:
+        return "单选"
+    return ""
+
+
+def _get_question_numbers_in_chunk(
+    *,
+    client: LlmClient,
+    source_name: str,
+    chunk_text: str,
+) -> list[dict[str, str]]:
+    sys_prompt = _question_number_list_prompt_rules()
+    user_prompt = render_import_prompt(
+        "question_number_list_user",
+        source_name=source_name,
+        chunk_text=chunk_text,
+    )
+    data = client.chat_json(system=sys_prompt, user=user_prompt)
+    return _normalize_question_ref_list(data)
+
+
+def _get_question_numbers_with_fallback(
+    *,
+    client: LlmClient,
+    source_name: str,
+    chunk_text: str,
+    depth: int,
+) -> list[dict[str, str]]:
+    try:
+        return _get_question_numbers_in_chunk(client=client, source_name=source_name, chunk_text=chunk_text)
+    except Exception as e:
+        msg = str(e).lower()
+        if depth <= 0 or len(chunk_text) < 1500:
+            raise
+        if "timed out" not in msg and "超时" not in msg:
+            raise
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for sub in _split_text(chunk_text, max_chars_per_chunk=max(800, len(chunk_text) // 2)):
+            for question_ref in _get_question_numbers_with_fallback(
+                client=client,
+                source_name=source_name,
+                chunk_text=sub,
+                depth=depth - 1,
+            ):
+                number = _as_str(question_ref.get("number", ""))
+                if number in seen:
+                    continue
+                seen.add(number)
+                out.append(question_ref)
+        return out
+
+
+def _get_question_number_list_verified(
+    *,
+    client: LlmClient,
+    kimi_client: LlmClient | None,
+    qwen_client: LlmClient | None,
+    source_name: str,
+    chunk_text: str,
+    depth: int,
+) -> list[dict[str, str]]:
+    if kimi_client is None or qwen_client is None:
+        raise RuntimeError("缺少 Kimi 或千问客户端，无法校验题号列表。")
+    results: dict[str, list[dict[str, str]]] = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        future_map = {
+            ex.submit(
+                _get_question_numbers_with_fallback,
+                client=client,
+                source_name=source_name,
+                chunk_text=chunk_text,
+                depth=depth,
+            ): "DeepSeek",
+            ex.submit(
+                _get_question_numbers_with_fallback,
+                client=kimi_client,
+                source_name=source_name,
+                chunk_text=chunk_text,
+                depth=depth,
+            ): "Kimi",
+            ex.submit(
+                _get_question_numbers_with_fallback,
+                client=qwen_client,
+                source_name=source_name,
+                chunk_text=chunk_text,
+                depth=depth,
+            ): "千问",
+        }
+        for future in as_completed(future_map):
+            model_name = future_map[future]
+            results[model_name] = future.result()
+    deepseek_numbers = results.get("DeepSeek", [])
+    kimi_numbers = results.get("Kimi", [])
+    qwen_numbers = results.get("千问", [])
+    if deepseek_numbers == kimi_numbers == qwen_numbers:
+        return deepseek_numbers
+    raise RuntimeError(
+        f"{source_name}：三模型识别出的选择题题号列表不一致，无法继续导入。"
+        f" DeepSeek={deepseek_numbers}；Kimi={kimi_numbers}；千问={qwen_numbers}"
     )
 
 
@@ -422,111 +542,38 @@ def _extract_questions_with_fallback(
             )
         return sub_items
 
-def _count_questions_in_chunk(
+def _get_question_by_number_in_chunk(
     *,
     client: LlmClient,
     source_name: str,
     chunk_text: str,
-) -> int:
-    sys_prompt = (
-        "你是一个题库整理助手。你必须严格按要求输出。\n"
-        "任务：统计提供的资料文本中存在多少道选择题。\n"
-        "只输出阿拉伯数字（例如 12），不要输出任何其他字符、标点、空格、换行。\n"
-    )
-    user_prompt = (
-        f"来源文件：{source_name}\n"
-        "资料文本如下：\n"
-        "-----\n"
-        f"{chunk_text}\n"
-        "-----\n"
-        "请只输出阿拉伯数字。"
-    )
-    data = client.chat_json(system=sys_prompt, user=user_prompt)
-    if isinstance(data, int):
-        return int(data)
-    if isinstance(data, str):
-        s = re.sub(r"[^0-9]", "", data)
-        return int(s) if s else 0
-    return 0
-
-
-def _get_question_n_in_chunk(
-    *,
-    client: LlmClient,
-    source_name: str,
-    chunk_text: str,
-    index: int,
+    requested_number: str,
 ) -> dict[str, Any]:
-    sys_prompt = (
-        _question_extract_prompt_rules()
-        +
-        "这里的任务是：从提供的资料文本中抽取指定序号的那一题。\n"
-        "输出格式：JSON 对象：\n"
-        "{\n"
-        '  "question_type": "题型(单选/多选/可转多选；可转多选示例：可转多选)",\n'
-        '  "number": "编号(可为空)",\n'
-        '  "stem": "题干(普通题示例：我国社会主义民主政治的本质特征是什么？；可转多选题示例：阅读材料，贯彻绿色发展理念需要坚持哪些做法？)",\n'
-        '  "option_1": "第1个选项正文；单选/多选通常对应A项，可转多选对应①项；不要包含选项标识",\n'
-        '  "option_2": "第2个选项正文；单选/多选通常对应B项，可转多选对应②项；不要包含选项标识",\n'
-        '  "option_3": "第3个选项正文；单选/多选通常对应C项，可转多选对应③项；不要包含选项标识",\n'
-        '  "option_4": "第4个选项正文；单选/多选通常对应D项，可转多选对应④项；不要包含选项标识",\n'
-        '  "choice_1": "可转多选时 A 对应的数字映射，例如 12；非可转多选留空",\n'
-        '  "choice_2": "可转多选时 B 对应的数字映射，例如 14；非可转多选留空",\n'
-        '  "choice_3": "可转多选时 C 对应的数字映射，例如 23；非可转多选留空",\n'
-        '  "choice_4": "可转多选时 D 对应的数字映射，例如 24；非可转多选留空",\n'
-        '  "answer": "答案(单选示例：A；多选示例：ACD；可转多选示例：B)"\n'
-        "}\n"
-        "如果无法确定该题，请输出空对象 {}。不要猜测，不要补全文本。"
-    )
-    user_prompt = (
-        f"来源文件：{source_name}\n"
-        f"请只输出第 {index} 题（从 1 开始计数）的 JSON 对象。\n"
-        "资料文本如下：\n"
-        "-----\n"
-        f"{chunk_text}\n"
-        "-----\n"
+    sys_prompt = _question_extract_prompt_rules()
+    user_prompt = render_import_prompt(
+        "question_extract_user",
+        source_name=source_name,
+        requested_number=requested_number,
+        chunk_text=chunk_text,
     )
     data = client.chat_json(system=sys_prompt, user=user_prompt)
     return _normalize_question_obj_for_view(data) if isinstance(data, dict) else {}
 
 
-def _count_questions_with_fallback(
+def _get_question_by_number_with_fallback(
     *,
     client: LlmClient,
     source_name: str,
     chunk_text: str,
-    depth: int,
-) -> int:
-    try:
-        return _count_questions_in_chunk(client=client, source_name=source_name, chunk_text=chunk_text)
-    except Exception as e:
-        msg = str(e).lower()
-        if depth <= 0 or len(chunk_text) < 1500:
-            raise
-        if "timed out" not in msg and "超时" not in msg:
-            raise
-        total = 0
-        for sub in _split_text(chunk_text, max_chars_per_chunk=max(800, len(chunk_text) // 2)):
-            total += _count_questions_with_fallback(
-                client=client,
-                source_name=source_name,
-                chunk_text=sub,
-                depth=depth - 1,
-            )
-        return total
-
-
-def _get_question_n_with_fallback(
-    *,
-    client: LlmClient,
-    source_name: str,
-    chunk_text: str,
-    index: int,
+    requested_number: str,
     depth: int,
 ) -> dict[str, Any]:
     try:
-        return _get_question_n_in_chunk(
-            client=client, source_name=source_name, chunk_text=chunk_text, index=index
+        return _get_question_by_number_in_chunk(
+            client=client,
+            source_name=source_name,
+            chunk_text=chunk_text,
+            requested_number=requested_number,
         )
     except Exception as e:
         msg = str(e).lower()
@@ -534,26 +581,12 @@ def _get_question_n_with_fallback(
             raise
         if "timed out" not in msg and "超时" not in msg:
             raise
-        parts = list(_split_text(chunk_text, max_chars_per_chunk=max(800, len(chunk_text) // 2)))
-        consumed = 0
-        for sub in parts:
-            sub_count = _count_questions_with_fallback(
+        for sub in _split_text(chunk_text, max_chars_per_chunk=max(800, len(chunk_text) // 2)):
+            obj = _get_question_by_number_with_fallback(
                 client=client,
                 source_name=source_name,
                 chunk_text=sub,
-                depth=max(0, depth - 1),
-            )
-            if sub_count <= 0:
-                continue
-            local_index = index - consumed
-            if local_index < 1 or local_index > sub_count:
-                consumed += sub_count
-                continue
-            obj = _get_question_n_with_fallback(
-                client=client,
-                source_name=source_name,
-                chunk_text=sub,
-                index=local_index,
+                requested_number=requested_number,
                 depth=depth - 1,
             )
             if obj:
@@ -569,6 +602,7 @@ def _get_question_n_verified(
     source_name: str,
     chunk_text: str,
     index: int,
+    requested_number: str,
     depth: int,
     attempt_cb: Callable[[str, int, int], None] | None = None,
     round_cb: Callable[[int, str], None] | None = None,
@@ -595,27 +629,27 @@ def _get_question_n_verified(
             }
             fut_map = {
                 ex.submit(
-                    _safe_get_question_n_with_fallback,
+                    _safe_get_question_by_number_with_fallback,
                     client=client,
                     source_name=source_name,
                     chunk_text=chunk_text,
-                    index=index,
+                    requested_number=requested_number,
                     depth=depth,
                 ): ("DeepSeek", 1),
                 ex.submit(
-                    _safe_get_question_n_with_fallback,
+                    _safe_get_question_by_number_with_fallback,
                     client=kimi_client,
                     source_name=source_name,
                     chunk_text=chunk_text,
-                    index=index,
+                    requested_number=requested_number,
                     depth=depth,
                 ): ("Kimi", 2),
                 ex.submit(
-                    _safe_get_question_n_with_fallback,
+                    _safe_get_question_by_number_with_fallback,
                     client=qwen_client,
                     source_name=source_name,
                     chunk_text=chunk_text,
-                    index=index,
+                    requested_number=requested_number,
                     depth=depth,
                 ): ("千问", 3),
             }
@@ -639,6 +673,7 @@ def _get_question_n_verified(
         accepted_obj, matched_count = _pick_consensus_obj(cumulative_valid_objs, required_count)
         last_meta = {
             "index": index,
+            "requested_number": requested_number,
             "round": round_no,
             "deepseek": _normalize_question_obj_for_view(obj_a),
             "kimi": _normalize_question_obj_for_view(obj_b),
@@ -671,20 +706,20 @@ def _get_question_n_verified(
     return {}, True, last_meta
 
 
-def _safe_get_question_n_with_fallback(
+def _safe_get_question_by_number_with_fallback(
     *,
     client: LlmClient,
     source_name: str,
     chunk_text: str,
-    index: int,
+    requested_number: str,
     depth: int,
 ) -> dict[str, Any]:
     try:
-        return _get_question_n_with_fallback(
+        return _get_question_by_number_with_fallback(
             client=client,
             source_name=source_name,
             chunk_text=chunk_text,
-            index=index,
+            requested_number=requested_number,
             depth=depth,
         )
     except Exception:
@@ -699,7 +734,7 @@ def _to_question(obj: dict[str, Any]) -> Question:
     option_values = _option_values_from_obj(obj, question_type=question_type)
     options_str = _build_options_string(option_values, question_type=question_type)
     answer = _as_str(obj.get("answer", ""))
-    analysis = ""
+    analysis = _original_analysis_text(obj)
     q = Question(
         number=number,
         stem=stem,
@@ -1114,6 +1149,7 @@ def _normalize_question_obj_for_view(obj: dict[str, Any]) -> dict[str, Any]:
     out["choice_2"] = q.choice_2
     out["choice_3"] = q.choice_3
     out["choice_4"] = q.choice_4
+    out["original_analysis"] = q.analysis
     return out
 
 
@@ -1144,8 +1180,13 @@ def _fingerprint_question_obj(obj: dict[str, Any]) -> str:
         "choice_2": _normalize_choice_digits(_as_str(obj.get("choice_2", ""))),
         "choice_3": _normalize_choice_digits(_as_str(obj.get("choice_3", ""))),
         "choice_4": _normalize_choice_digits(_as_str(obj.get("choice_4", ""))),
+        "original_analysis": _normalize_text(_original_analysis_text(obj)),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _original_analysis_text(obj: dict[str, Any]) -> str:
+    return _as_str(obj.get("original_analysis", "")) or _as_str(obj.get("analysis", ""))
 
 
 def _normalize_question_type_value(obj: dict[str, Any]) -> str:

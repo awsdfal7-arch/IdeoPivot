@@ -16,24 +16,26 @@ class MockLlmClient:
 
     def chat_json(self, *, system: str, user: str):
         self._calls.append(user)
-        if "只输出阿拉伯数字" in user:
-            return "2"
-        m = re.search(r"只输出第\s*(\d+)\s*题", user)
+        if "请输出所有选择题题号列表" in user:
+            return ["1", "3"]
+        m = re.search(r"题号为\s*(\d+)", user)
         if m:
-            idx = int(m.group(1))
-            if idx == 1:
+            number = m.group(1)
+            if number == "1":
                 return {
                     "number": "1",
                     "stem": "下列关于社会主义核心价值观的表述，正确的是（ ）",
                     "options": "A. 富强 B. 自由 C. 爱国 D. 以上都正确",
                     "answer": "D",
+                    "original_analysis": "原文解析一",
                 }
-            if idx == 2:
+            if number == "3":
                 return {
                     "number": "3",
                     "stem": "下列属于中国式现代化特征的有（  ）",
                     "options": "①人口规模巨大②共同富裕③协调④和谐共生",
                     "answer": "①②③④",
+                    "original_analysis": "",
                 }
         return {}
 

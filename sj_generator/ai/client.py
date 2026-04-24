@@ -128,6 +128,6 @@ def _build_chat_completions_url(base_url: str) -> str:
 
 def _pick_temperature(model: str) -> float:
     m = (model or "").strip().lower()
-    if m.startswith("kimi-k2.5"):
+    if m.startswith("kimi-k2.6") or m.startswith("kimi-k2.5"):
         return 1.0
     return 0.0

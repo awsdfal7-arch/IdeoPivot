@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 import threading
 import time
 
@@ -9,6 +10,8 @@ from sj_generator.io.sqlite_repo import DbQuestionRecord, append_questions, dele
 
 from sj_generator.ai import balance as balance_mod
 from sj_generator.ai import import_questions as iq
+from sj_generator.ai import prompt_templates as prompt_mod
+from sj_generator.ai.client import _pick_temperature
 from sj_generator.ai.import_questions import ImportResult
 from sj_generator.ai.task_runner import run_tasks_in_parallel
 from sj_generator.io import batch_ai_import as batch_ai
@@ -19,6 +22,7 @@ from sj_generator.models import Question
 from sj_generator import config as cfg_mod
 from sj_generator.ui.compare_highlight import compare_highlight_model_styles
 from sj_generator.ui.state import (
+    WizardState,
     default_repo_parent_dir,
     normalize_default_repo_parent_dir_text,
     normalize_ai_concurrency,
@@ -96,47 +100,6 @@ def test_delete_question_by_id_removes_only_target_record(tmp_path) -> None:
     assert [record.id for record in load_all_questions(db_path)] == ["q2"]
 
 
-def test_get_question_n_with_fallback_maps_to_local_index(monkeypatch) -> None:
-    root_text = "root\n" + ("x" * 2000)
-
-    def fake_split(text: str, *, max_chars_per_chunk: int):
-        if text == root_text:
-            return ["sub1", "sub2"]
-        return [text]
-
-    def fake_count(*, client, source_name: str, chunk_text: str, depth: int) -> int:
-        if chunk_text == "sub1":
-            return 2
-        if chunk_text == "sub2":
-            return 1
-        return 0
-
-    calls: list[tuple[str, int]] = []
-
-    def fake_get_in_chunk(*, client, source_name: str, chunk_text: str, index: int):
-        calls.append((chunk_text, index))
-        if chunk_text == root_text:
-            raise TimeoutError("timed out")
-        if chunk_text == "sub2" and index == 1:
-            return {"number": "3", "stem": "ok"}
-        return {}
-
-    monkeypatch.setattr(iq, "_split_text", fake_split)
-    monkeypatch.setattr(iq, "_count_questions_with_fallback", fake_count)
-    monkeypatch.setattr(iq, "_get_question_n_in_chunk", fake_get_in_chunk)
-
-    got = iq._get_question_n_with_fallback(
-        client=object(),
-        source_name="src",
-        chunk_text=root_text,
-        index=3,
-        depth=2,
-    )
-
-    assert got.get("number") == "3"
-    assert ("sub2", 1) in calls
-
-
 def test_config_path_defaults_to_appdata(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.delenv("SJ_GENERATOR_CONFIG_PATH", raising=False)
@@ -181,6 +144,90 @@ def test_program_settings_persist_round_trip(monkeypatch, tmp_path) -> None:
         "export_include_analysis": True,
         "preferred_textbook_version": "必修二",
     }
+
+
+def test_save_program_analysis_target_persists(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", raising=False)
+    cfg_mod.save_program_settings({"analysis_provider": "deepseek", "analysis_model_name": "deepseek-reasoner"})
+
+    cfg_mod.save_program_analysis_target(provider="kimi", model_name="kimi-k2.6")
+
+    saved = cfg_mod.load_program_settings()
+    assert saved["analysis_provider"] == "kimi"
+    assert saved["analysis_model_name"] == "kimi-k2.6"
+
+
+def test_project_parse_model_rows_persist(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", raising=False)
+
+    cfg_mod.save_project_parse_model_rows(
+        [
+            {
+                "key": "question_number_parse",
+                "round": "1",
+                "ratio": "2/3",
+                "models": [
+                    {"provider": "deepseek", "model_name": "deepseek-chat"},
+                    {"provider": "kimi", "model_name": "kimi-k2.6"},
+                ],
+            },
+            {
+                "key": "question_content_parse",
+                "round": "2",
+                "ratio": "1/4",
+                "models": [{"provider": "qwen", "model_name": "qwen-max"}],
+            },
+        ]
+    )
+
+    rows = cfg_mod.load_project_parse_model_rows()
+    assert rows[0]["key"] == "question_number_parse"
+    assert rows[0]["ratio"] == "2/3"
+    assert rows[0]["models"][0] == {"provider": "deepseek", "model_name": "deepseek-chat"}
+    assert rows[1]["key"] == "question_content_parse"
+    assert rows[1]["models"][0] == {"provider": "qwen", "model_name": "qwen-max"}
+
+
+def test_load_deepseek_config_prefers_project_parse_model_rows(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", raising=False)
+    monkeypatch.delenv("SJ_GENERATOR_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("DEEPSEEK_QUESTION_NUMBER_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_QUESTION_UNIT_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+
+    cfg_mod.save_deepseek_config(
+        cfg_mod.DeepSeekConfig(
+            base_url="https://api.deepseek.com",
+            api_key="",
+            number_model="file-number-model",
+            model="file-unit-model",
+            analysis_model="deepseek-reasoner",
+            timeout_s=120.0,
+        )
+    )
+    cfg_mod.save_project_parse_model_rows(
+        [
+            {
+                "key": "question_number_parse",
+                "round": "1",
+                "ratio": "1/3",
+                "models": [{"provider": "deepseek", "model_name": "project-number-model"}],
+            },
+            {
+                "key": "question_content_parse",
+                "round": "2",
+                "ratio": "1/3",
+                "models": [{"provider": "deepseek", "model_name": "project-unit-model"}],
+            },
+        ]
+    )
+
+    cfg = cfg_mod.load_deepseek_config()
+    assert cfg.number_model == "project-number-model"
+    assert cfg.model == "project-unit-model"
 
 
 def test_normalize_export_include_defaults_true() -> None:
@@ -257,13 +304,16 @@ def test_deepseek_analysis_model_defaults_and_persists(monkeypatch, tmp_path) ->
     monkeypatch.delenv("SJ_GENERATOR_CONFIG_PATH", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_ANALYSIS_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_QUESTION_NUMBER_MODEL", raising=False)
 
     cfg = cfg_mod.load_deepseek_config()
     assert cfg.analysis_model == "deepseek-reasoner"
+    assert cfg.number_model == "deepseek-chat"
 
     updated = cfg_mod.DeepSeekConfig(
         base_url=cfg.base_url,
         api_key="sk-test",
+        number_model="deepseek-chat",
         model="deepseek-chat",
         analysis_model="deepseek-reasoner",
         timeout_s=cfg.timeout_s,
@@ -271,6 +321,7 @@ def test_deepseek_analysis_model_defaults_and_persists(monkeypatch, tmp_path) ->
     cfg_mod.save_deepseek_config(updated)
     reloaded = cfg_mod.load_deepseek_config()
     assert reloaded.analysis_model == "deepseek-reasoner"
+    assert reloaded.number_model == "deepseek-chat"
     assert reloaded.api_key == ""
 
 
@@ -311,6 +362,7 @@ def test_qwen_account_balance_credentials_only_read_from_env_and_not_saved(monke
     cfg = cfg_mod.QwenConfig(
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key="dashscope-key",
+        number_model="qwen-max",
         model="qwen-max",
         account_access_key_id="akid",
         account_access_key_secret="aksecret",
@@ -325,6 +377,7 @@ def test_qwen_account_balance_credentials_only_read_from_env_and_not_saved(monke
 
     reloaded = cfg_mod.load_qwen_config()
     assert reloaded.api_key == ""
+    assert reloaded.number_model == "qwen-max"
     assert reloaded.account_access_key_id == ""
     assert reloaded.account_access_key_secret == ""
     assert reloaded.has_account_balance_credentials() is False
@@ -337,6 +390,170 @@ def test_qwen_account_balance_credentials_only_read_from_env_and_not_saved(monke
     assert reloaded.account_access_key_id == "akid-env"
     assert reloaded.account_access_key_secret == "aksecret-env"
     assert reloaded.has_account_balance_credentials() is True
+
+
+def test_kimi_question_number_model_falls_back_to_legacy_model(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_KIMI_CONFIG_PATH", raising=False)
+    path = cfg_mod._kimi_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "base_url": "https://api.moonshot.cn/v1",
+                "model": "kimi-k2-turbo-preview",
+                "timeout_s": 60.0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = cfg_mod.load_kimi_config()
+
+    assert cfg.number_model == "kimi-k2-turbo-preview"
+    assert cfg.model == "kimi-k2-turbo-preview"
+
+
+def test_kimi_defaults_now_use_kimi_2_6(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    cfg_path = tmp_path / "isolated-kimi-defaults.json"
+    cfg_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("SJ_GENERATOR_KIMI_CONFIG_PATH", str(cfg_path))
+    monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_QUESTION_NUMBER_MODEL", raising=False)
+    monkeypatch.delenv("KIMI_QUESTION_UNIT_MODEL", raising=False)
+    monkeypatch.delenv("KIMI_MODEL", raising=False)
+    monkeypatch.delenv("KIMI_TIMEOUT_S", raising=False)
+
+    cfg = cfg_mod.load_kimi_config()
+
+    assert cfg.number_model == "kimi-k2.6"
+    assert cfg.model == "kimi-k2.6"
+
+
+def test_sync_kimi_runtime_env_updates_effective_loaded_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_KIMI_CONFIG_PATH", raising=False)
+    saved_env: dict[str, str] = {}
+
+    def fake_set_user_environment_variable(name: str, value: str) -> None:
+        text = (value or "").strip()
+        if text:
+            saved_env[name] = text
+            monkeypatch.setenv(name, text)
+        else:
+            saved_env.pop(name, None)
+            monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setattr(cfg_mod, "set_user_environment_variable", fake_set_user_environment_variable)
+    for name in (
+        "KIMI_BASE_URL",
+        "KIMI_API_KEY",
+        "KIMI_QUESTION_NUMBER_MODEL",
+        "KIMI_QUESTION_UNIT_MODEL",
+        "KIMI_MODEL",
+        "KIMI_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    path = cfg_mod._kimi_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "base_url": "https://old.example/v1",
+                "question_number_model": "old-number",
+                "model": "old-unit",
+                "timeout_s": 30.0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    cfg_mod.sync_kimi_runtime_env(
+        cfg_mod.KimiConfig(
+            base_url="https://new.example/v1",
+            api_key="kimi-key",
+            number_model="kimi-number-model",
+            model="kimi-unit-model",
+            timeout_s=66.0,
+        )
+    )
+
+    loaded = cfg_mod.load_kimi_config()
+    assert saved_env["KIMI_BASE_URL"] == "https://new.example/v1"
+    assert saved_env["KIMI_QUESTION_NUMBER_MODEL"] == "kimi-number-model"
+    assert saved_env["KIMI_QUESTION_UNIT_MODEL"] == "kimi-unit-model"
+    assert loaded.base_url == "https://new.example/v1"
+    assert loaded.api_key == "kimi-key"
+    assert loaded.number_model == "kimi-number-model"
+    assert loaded.model == "kimi-unit-model"
+    assert loaded.timeout_s == 66.0
+
+
+def test_sync_qwen_runtime_env_updates_effective_loaded_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.delenv("SJ_GENERATOR_QWEN_CONFIG_PATH", raising=False)
+    saved_env: dict[str, str] = {}
+
+    def fake_set_user_environment_variable(name: str, value: str) -> None:
+        text = (value or "").strip()
+        if text:
+            saved_env[name] = text
+            monkeypatch.setenv(name, text)
+        else:
+            saved_env.pop(name, None)
+            monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setattr(cfg_mod, "set_user_environment_variable", fake_set_user_environment_variable)
+    for name in (
+        "QWEN_BASE_URL",
+        "QWEN_API_KEY",
+        "QWEN_QUESTION_NUMBER_MODEL",
+        "QWEN_QUESTION_UNIT_MODEL",
+        "QWEN_MODEL",
+        "QWEN_TIMEOUT_S",
+        "QWEN_ACCOUNT_ACCESS_KEY_ID",
+        "QWEN_ACCOUNT_ACCESS_KEY_SECRET",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    cfg_mod.sync_qwen_runtime_env(
+        cfg_mod.QwenConfig(
+            base_url="https://dashscope.example/v1",
+            api_key="qwen-key",
+            number_model="qwen-number-model",
+            model="qwen-unit-model",
+            account_access_key_id="akid",
+            account_access_key_secret="aksecret",
+            timeout_s=77.0,
+        )
+    )
+
+    loaded = cfg_mod.load_qwen_config()
+    assert saved_env["QWEN_QUESTION_NUMBER_MODEL"] == "qwen-number-model"
+    assert saved_env["QWEN_QUESTION_UNIT_MODEL"] == "qwen-unit-model"
+    assert saved_env["ALIBABA_CLOUD_ACCESS_KEY_ID"] == "akid"
+    assert loaded.base_url == "https://dashscope.example/v1"
+    assert loaded.api_key == "qwen-key"
+    assert loaded.number_model == "qwen-number-model"
+    assert loaded.model == "qwen-unit-model"
+    assert loaded.account_access_key_id == "akid"
+    assert loaded.account_access_key_secret == "aksecret"
+    assert loaded.timeout_s == 77.0
+
+
+def test_pick_temperature_uses_kimi_k2_6_family_rule() -> None:
+    assert _pick_temperature("kimi-k2.6") == 1.0
+    assert _pick_temperature("kimi-k2.6-thinking") == 1.0
+    assert _pick_temperature("deepseek-chat") == 0.0
 
 
 def test_compare_highlight_marks_minority_model() -> None:
@@ -770,7 +987,7 @@ def test_import_questions_from_sources_supports_question_level_concurrency(monke
     src = tmp_path / "资料一.txt"
     src.write_text("原始资料", encoding="utf-8")
 
-    monkeypatch.setattr(iq, "_count_questions_with_fallback", lambda **kwargs: 3)
+    monkeypatch.setattr(iq, "_get_question_number_list_verified", lambda **kwargs: ["1", "2", "3"])
     monkeypatch.setattr(
         iq,
         "_process_one_question",
@@ -804,3 +1021,60 @@ def test_import_questions_from_sources_supports_question_level_concurrency(monke
 
     assert [q.number for q in result.questions] == ["1", "2", "3"]
     assert len(created) == 9
+
+
+def test_to_question_uses_original_analysis_when_present() -> None:
+    q = iq._to_question(
+        {
+            "question_type": "单选",
+            "number": "8",
+            "stem": "题干",
+            "option_1": "甲",
+            "option_2": "乙",
+            "option_3": "丙",
+            "option_4": "丁",
+            "answer": "A",
+            "original_analysis": "原文自带解析",
+        }
+    )
+
+    assert q.number == "8"
+    assert q.analysis == "原文自带解析"
+
+
+def test_import_prompt_templates_can_persist_and_render(monkeypatch, tmp_path) -> None:
+    prompt_path = tmp_path / "import_prompts.json"
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_PROMPTS_PATH", str(prompt_path))
+
+    prompts = prompt_mod.default_import_prompts()
+    prompts["question_number_list_system"] = "自定义题号规则"
+    prompts["question_extract_user"] = "文件={{source_name}} 题号={{requested_number}} 文本={{chunk_text}}"
+    prompt_mod.save_import_prompts(prompts)
+
+    loaded = prompt_mod.load_import_prompts(force_reload=True)
+    rendered = prompt_mod.render_import_prompt(
+        "question_extract_user",
+        source_name="资料.docx",
+        requested_number="12",
+        chunk_text="原文",
+    )
+
+    assert loaded["question_number_list_system"] == "自定义题号规则"
+    assert rendered == "文件=资料.docx 题号=12 文本=原文"
+
+
+def test_normalize_question_ref_list_supports_rich_json_and_legacy_strings() -> None:
+    rich = iq._normalize_question_ref_list(
+        [
+            {"number": "1", "question_type": "单选"},
+            {"number": "2", "question_type": "可转多选"},
+            {"number": "2", "question_type": "多选"},
+        ]
+    )
+    legacy = iq._normalize_question_ref_list(["3", "4", "4"])
+
+    assert rich == [
+        {"number": "1", "question_type": "单选"},
+        {"number": "2", "question_type": "可转多选"},
+    ]
+    assert legacy == [{"number": "3"}, {"number": "4"}]

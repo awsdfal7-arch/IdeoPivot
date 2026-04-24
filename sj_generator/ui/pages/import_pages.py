@@ -42,6 +42,9 @@ from sj_generator.ai.import_questions import _fingerprint_question_obj, import_q
 from sj_generator.config import (
     load_deepseek_config,
     load_kimi_config,
+    to_kimi_question_number_llm_config,
+    to_question_number_llm_config,
+    to_qwen_question_number_llm_config,
     load_qwen_config,
     to_kimi_llm_config,
     to_llm_config,
@@ -1264,13 +1267,13 @@ class _AiImportWorker(QObject):
                     raise RuntimeError(f"当前仅支持 Word 文档导入：{p.name}")
                 sources.append((p, read_source_text(p)))
 
-            client = LlmClient(to_llm_config(self._cfg))
+            client = LlmClient(to_question_number_llm_config(self._cfg))
             kimi_cfg = load_kimi_config()
             qwen_cfg = load_qwen_config()
             if not kimi_cfg.is_ready() or not qwen_cfg.is_ready():
                 raise RuntimeError("请先完成 Kimi 与千问配置并通过可用性测试。")
-            kimi_client = LlmClient(to_kimi_llm_config(kimi_cfg))
-            qwen_client = LlmClient(to_qwen_llm_config(qwen_cfg))
+            kimi_client = LlmClient(to_kimi_question_number_llm_config(kimi_cfg))
+            qwen_client = LlmClient(to_qwen_question_number_llm_config(qwen_cfg))
             result = import_questions_from_sources(
                 client=client,
                 kimi_client=kimi_client,

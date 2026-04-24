@@ -441,7 +441,7 @@ class WelcomePage(QWizardPage):
             index += 1
 
     def _open_api_cfg(self) -> None:
-        dlg = ApiConfigDialog(self)
+        dlg = ApiConfigDialog(self, state=self._state)
         dlg.exec()
 
     def _open_program_settings(self) -> None:
