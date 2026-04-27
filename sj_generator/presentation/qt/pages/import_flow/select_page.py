@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (
 )
 
 from sj_generator.application.state import AiSourceFileItem, ImportWizardSession
-from sj_generator.ui.constants import PAGE_AI_IMPORT
-from sj_generator.ui.import_page_common import (
+from sj_generator.presentation.qt.constants import PAGE_AI_IMPORT
+from .import_page_common import (
     LevelPathItemDelegate,
     PreserveCellBackgroundDelegate,
     extract_paths_from_drop_event,
@@ -24,11 +24,11 @@ from sj_generator.ui.import_page_common import (
     merge_paths_text,
     rename_project,
 )
-from sj_generator.ui.import_select_session import (
+from .import_select_session import (
     build_opened_doc_session,
     poll_opened_doc_sessions,
 )
-from sj_generator.ui.message_box import show_message_box
+from sj_generator.presentation.qt.message_box import show_message_box
 from .select_support import (
     build_split_import_states_for_paths,
     collect_table_items,
@@ -40,7 +40,7 @@ from .select_support import (
     serialize_selected_paths,
     update_import_reminder,
 )
-from sj_generator.ui.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
 
 class AiSelectFilesPage(QWizardPage):

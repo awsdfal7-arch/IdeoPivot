@@ -6,9 +6,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QWidget
 
 from sj_generator.application.state import AiSourceFileItem, ImportWizardSession
-from sj_generator.ui.import_page_common import style_dialog_button
-from sj_generator.ui.import_select_reminder import populate_import_reminder_columns
-from sj_generator.ui.import_select_session import select_first_changed_row
+from .import_page_common import style_dialog_button
+from .import_select_reminder import populate_import_reminder_columns
+from .import_select_session import select_first_changed_row
 
 
 def serialize_selected_paths(table: QTableWidget) -> str:

@@ -25,23 +25,23 @@ from sj_generator.application.settings import (
 )
 from sj_generator.application.state import ImportWizardSession
 from sj_generator.infrastructure.llm.question_ref_scan import question_ref_model_specs
-from sj_generator.ui.constants import PAGE_AI_IMPORT_CONTENT
-from sj_generator.ui.import_content_detail import question_ref_total_count
-from sj_generator.ui.import_page_common import style_busy_progress
-from sj_generator.ui.import_question_ref_detail import (
+from sj_generator.presentation.qt.constants import PAGE_AI_IMPORT_CONTENT
+from .import_content_detail import question_ref_total_count
+from .import_page_common import style_busy_progress
+from .import_question_ref_detail import (
     build_manual_type_combo,
     question_ref_detail_headers,
 )
-from sj_generator.ui.import_ref_session import QuestionRefRuntimeState
-from sj_generator.ui.import_workers import AiQuestionRefWorker
-from sj_generator.ui.message_box import show_message_box
+from .import_ref_session import QuestionRefRuntimeState
+from .import_workers import AiQuestionRefWorker
+from sj_generator.presentation.qt.message_box import show_message_box
 from .question_ref_support import (
     apply_question_ref_detail_column_widths,
     create_question_ref_worker_bundle,
     missing_question_ref_provider_labels,
     render_question_ref_detail_table,
 )
-from sj_generator.ui.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
 
 class AiImportPage(QWizardPage):

@@ -6,7 +6,7 @@ from pathlib import Path
 from PyQt6.QtCore import QThread
 from PyQt6.QtWidgets import QTableWidget
 
-from sj_generator.ui.import_content_detail import (
+from .import_content_detail import (
     apply_compare_row_background,
     apply_content_detail_column_widths,
     apply_partial_pass_highlight,
@@ -19,7 +19,7 @@ from sj_generator.ui.import_content_detail import (
     record_round_sec,
     set_content_detail_item,
 )
-from sj_generator.ui.import_workers import AiImportContentWorker
+from .import_workers import AiImportContentWorker
 
 
 def missing_content_model_labels(model_specs: list[dict[str, str]], ready_map: dict[str, bool]) -> list[str]:

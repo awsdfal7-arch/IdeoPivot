@@ -8,14 +8,14 @@ from PyQt6.QtCore import QThread
 from PyQt6.QtWidgets import QHeaderView, QTableWidget
 
 from sj_generator.infrastructure.llm.question_ref_scan import question_ref_model_specs
-from sj_generator.ui.import_question_ref_detail import (
+from .import_question_ref_detail import (
     build_question_ref_detail_rows,
     populate_question_ref_detail_table,
     question_ref_detail_headers,
     question_ref_detail_model_specs,
 )
-from sj_generator.ui.import_ref_session import QuestionRefRuntimeState
-from sj_generator.ui.import_workers import AiQuestionRefWorker
+from .import_ref_session import QuestionRefRuntimeState
+from .import_workers import AiQuestionRefWorker
 
 _PROVIDER_LABELS = {
     "deepseek": "DeepSeek",

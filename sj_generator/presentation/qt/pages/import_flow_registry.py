@@ -14,7 +14,7 @@ from sj_generator.presentation.qt.pages.import_flow import (
     DedupeResultPage,
     ImportSuccessPage,
 )
-from sj_generator.ui.constants import (
+from sj_generator.presentation.qt.constants import (
     PAGE_AI_ANALYSIS,
     PAGE_AI_IMPORT,
     PAGE_AI_IMPORT_CONTENT,

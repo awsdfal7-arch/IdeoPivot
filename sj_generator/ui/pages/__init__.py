@@ -1,3 +1,26 @@
+from __future__ import annotations
+
+from importlib import import_module
+
+_MODULE_EXPORTS = {
+    "intro_pages": ["IntroPage"],
+    "welcome_pages": ["WelcomePage"],
+    "import_flow": [
+        "AiSelectFilesPage",
+        "AiImportPage",
+        "AiImportContentPage",
+        "DedupeResultPage",
+        "AiAnalysisPage",
+        "ImportSuccessPage",
+    ],
+}
+
+_EXPORT_TO_MODULE = {
+    name: module_name
+    for module_name, names in _MODULE_EXPORTS.items()
+    for name in names
+}
+
 __all__ = [
     "IntroPage",
     "WelcomePage",
@@ -11,36 +34,14 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "IntroPage":
-        from .intro_pages import IntroPage
+    module_name = _EXPORT_TO_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f".{module_name}", __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
-        return IntroPage
-    if name == "WelcomePage":
-        from .welcome_pages import WelcomePage
 
-        return WelcomePage
-    if name == "AiSelectFilesPage":
-        from .import_flow import AiSelectFilesPage
-
-        return AiSelectFilesPage
-    if name == "AiImportPage":
-        from .import_flow import AiImportPage
-
-        return AiImportPage
-    if name == "AiImportContentPage":
-        from .import_flow import AiImportContentPage
-
-        return AiImportContentPage
-    if name == "DedupeResultPage":
-        from .dedupe_pages import DedupeResultPage
-
-        return DedupeResultPage
-    if name == "AiAnalysisPage":
-        from .analysis_pages import AiAnalysisPage
-
-        return AiAnalysisPage
-    if name == "ImportSuccessPage":
-        from .export_pages import ImportSuccessPage
-
-        return ImportSuccessPage
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

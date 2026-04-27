@@ -35,9 +35,9 @@ from sj_generator.infrastructure.llm.explanations import (
 )
 from sj_generator.infrastructure.llm.task_runner import run_tasks_in_parallel
 from sj_generator.shared.paths import app_paths
-from sj_generator.ui.constants import PAGE_IMPORT_SUCCESS
-from sj_generator.ui.import_db_service import commit_draft_questions_to_db
-from sj_generator.ui.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.constants import PAGE_IMPORT_SUCCESS
+from sj_generator.presentation.qt.pages.import_flow.import_db_service import commit_draft_questions_to_db
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
 COL_NUMBER = 0
 COL_STEM = 1
@@ -355,10 +355,10 @@ class AiAnalysisPage(QWizardPage):
             self.completeChanged.emit()
             return
 
-        root_dir = Path(__file__).resolve().parents[5]
+        resource_paths = app_paths()
         ref_paths: list[Path] = []
         if self._state.analysis_use_reference_folder:
-            ref_dir = app_paths(root_dir).reference_resource_dir
+            ref_dir = resource_paths.reference_resource_dir
             if ref_dir.exists():
                 ref_paths = sorted([path for path in ref_dir.glob("*.md")], key=lambda path: path.name)
         tasks = self._tasks
@@ -388,7 +388,7 @@ class AiAnalysisPage(QWizardPage):
             tasks=tasks,
             reference_md_paths=ref_paths,
             include_common_mistakes=self._state.analysis_include_common_mistakes,
-            root_dir=root_dir,
+            root_dir=resource_paths.base_dir,
             max_workers=normalize_ai_concurrency(self._state.analysis_generation_concurrency),
         )
         worker.moveToThread(thread)

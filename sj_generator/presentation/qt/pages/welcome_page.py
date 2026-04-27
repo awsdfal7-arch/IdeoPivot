@@ -28,32 +28,40 @@ from sj_generator.application.state import (
     library_db_path_from_repo_parent_dir_text,
 )
 from sj_generator.infrastructure.persistence.sqlite_repo import DbQuestionRecord
-from sj_generator.ui.constants import PAGE_AI_SELECT
-from sj_generator.ui.message_box import show_message_box
-from sj_generator.ui.program_settings_dialog import SECTION_EXPORT, SECTION_GENERAL, SECTION_IMPORT
-from sj_generator.ui.styles import rounded_panel_stylesheet
-from sj_generator.ui.table_copy import CopyableTableWidget
-from sj_generator.ui.welcome_export_actions import (
+from sj_generator.presentation.qt.program_settings_dialog import (
+    SECTION_EXPORT,
+    SECTION_GENERAL,
+    SECTION_IMPORT,
+)
+from sj_generator.presentation.qt.constants import PAGE_AI_SELECT
+from sj_generator.presentation.qt.message_box import show_message_box
+from sj_generator.presentation.qt.styles import rounded_panel_stylesheet
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.pages.welcome_export_actions import (
     export_current_level_markdown,
     export_current_level_pdf,
     export_current_level_xlsx,
     export_db_table_xlsx,
 )
-from sj_generator.ui.welcome_import import (
+from sj_generator.presentation.qt.pages.welcome_import import (
     effective_import_source_dir,
     open_import_flow_states,
     open_import_flow_windows,
     show_import_flow_window,
 )
-from sj_generator.ui.welcome_menu import build_welcome_menu_bar
-from sj_generator.ui.welcome_page_actions import import_from_table_file, open_api_config, open_program_settings
-from sj_generator.ui.welcome_question_actions import (
+from sj_generator.presentation.qt.pages.welcome_menu import build_welcome_menu_bar
+from sj_generator.presentation.qt.pages.welcome_page_actions import (
+    import_from_table_file,
+    open_api_config,
+    open_program_settings,
+)
+from sj_generator.presentation.qt.pages.welcome_question_actions import (
     add_question_manually,
     edit_question_record,
     selected_tree_level_path_for_create,
 )
-from sj_generator.ui.welcome_table import populate_db_records_table
-from sj_generator.ui.welcome_table_view import (
+from sj_generator.presentation.qt.pages.welcome_table import populate_db_records_table
+from sj_generator.presentation.qt.pages.welcome_table_view import (
     adjust_table_font_size,
     apply_table_font_size,
     apply_table_row_resize,
@@ -66,7 +74,7 @@ from sj_generator.ui.welcome_table_view import (
     schedule_table_row_resize,
     set_column_visible,
 )
-from sj_generator.ui.welcome_tree_actions import (
+from sj_generator.presentation.qt.pages.welcome_tree_actions import (
     delete_level_subtree,
     handle_level_selection_changed,
     refresh_level_tree,

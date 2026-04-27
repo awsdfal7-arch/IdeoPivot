@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QWizard
 
 from sj_generator.application.state import ImportWizardSession
 from sj_generator.presentation.qt.pages import register_import_flow_pages
-from sj_generator.ui.constants import (
+from sj_generator.presentation.qt.constants import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
     PAGE_AI_ANALYSIS,
@@ -16,7 +16,7 @@ from sj_generator.ui.constants import (
     PAGE_IMPORT_SUCCESS,
     QT_MAX_WINDOW_SIZE,
 )
-from sj_generator.ui.wizard_base import AppWizardBase
+from sj_generator.presentation.qt.wizard_base import AppWizardBase
 
 BUTTON_MIN_WIDTH = 128
 BUTTON_MIN_HEIGHT = 40

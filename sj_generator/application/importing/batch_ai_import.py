@@ -278,8 +278,9 @@ def _fill_missing_explanations(
 ) -> list[Question]:
     if not questions:
         return questions
-    root_dir = Path(__file__).resolve().parents[2]
-    ref_dir = app_paths(root_dir).reference_resource_dir
+    resource_paths = app_paths()
+    root_dir = resource_paths.base_dir
+    ref_dir = resource_paths.reference_resource_dir
     reference_md_paths = sorted(ref_dir.glob("*.md"), key=lambda p: p.name) if ref_dir.exists() else []
     include_common_mistakes = common_mistakes_md_path(root_dir).exists()
 

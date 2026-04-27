@@ -30,9 +30,9 @@ from sj_generator.infrastructure.persistence.sqlite_repo import (
     DbQuestionRecord,
     load_all_questions,
 )
-from sj_generator.ui.constants import PAGE_AI_ANALYSIS, PAGE_IMPORT_SUCCESS
-from sj_generator.ui.import_db_service import commit_draft_questions_to_db
-from sj_generator.ui.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.constants import PAGE_AI_ANALYSIS, PAGE_IMPORT_SUCCESS
+from sj_generator.presentation.qt.pages.import_flow.import_db_service import commit_draft_questions_to_db
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
 BUTTON_MIN_WIDTH = 96
 BUTTON_MIN_HEIGHT = 36

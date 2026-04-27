@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon
@@ -18,9 +17,9 @@ from sj_generator.application.state import (
     normalize_import_source_dir_text,
     normalize_preferred_textbook_version,
 )
-from sj_generator.ui.styles import APP_STYLESHEET
-from sj_generator.ui.import_costs import begin_app_import_cost_capture
-from sj_generator.ui.constants import (
+from sj_generator.presentation.qt.import_costs import begin_app_import_cost_capture
+from sj_generator.presentation.qt.styles import APP_STYLESHEET
+from sj_generator.presentation.qt.constants import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
     PAGE_INTRO,
@@ -29,7 +28,8 @@ from sj_generator.ui.constants import (
 )
 from sj_generator.presentation.qt.pages.intro_page import IntroPage
 from sj_generator.presentation.qt.pages.welcome_page import WelcomePage
-from sj_generator.ui.wizard_base import AppWizardBase
+from sj_generator.presentation.qt.wizard_base import AppWizardBase
+from sj_generator.shared.paths import app_paths
 
 
 class GeneratorWizard(AppWizardBase):
@@ -103,7 +103,6 @@ class GeneratorWizard(AppWizardBase):
             data.get("analysis_generation_concurrency", legacy_ai_concurrency)
         )
         self._state.analysis_enabled = bool(data.get("analysis_enabled", self._state.analysis_enabled))
-        self._state.import_show_costs = bool(data.get("import_show_costs", self._state.import_show_costs))
         self._state.dedupe_enabled = bool(data.get("dedupe_enabled", self._state.dedupe_enabled))
         self._state.analysis_provider = normalize_analysis_provider(data.get("analysis_provider"))
         self._state.analysis_model_name = normalize_analysis_model_name(data.get("analysis_model_name"))
@@ -135,7 +134,7 @@ def main() -> None:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_STYLESHEET)
-    icon_path = Path(__file__).resolve().parents[3] / "logo.png"
+    icon_path = app_paths().logo_path
     icon: QIcon | None = None
     if icon_path.exists():
         loaded_icon = QIcon(str(icon_path))

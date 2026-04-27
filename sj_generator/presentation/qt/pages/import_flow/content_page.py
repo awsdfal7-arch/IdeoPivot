@@ -18,12 +18,12 @@ from sj_generator.infrastructure.llm.import_questions import (
     question_content_provider_ready,
     question_content_round_limit,
 )
-from sj_generator.ui.constants import (
+from sj_generator.presentation.qt.constants import (
     PAGE_AI_ANALYSIS,
     PAGE_DEDUPE_RESULT,
     PAGE_IMPORT_SUCCESS,
 )
-from sj_generator.ui.import_content_detail import (
+from .import_content_detail import (
     effective_content_question_workers,
     question_content_active_model_specs,
     question_content_detail_headers,
@@ -31,11 +31,11 @@ from sj_generator.ui.import_content_detail import (
     question_ref_total_count,
     set_content_detail_item,
 )
-from sj_generator.ui.import_db_service import commit_draft_questions_to_db
-from sj_generator.ui.import_page_common import style_busy_progress
-from sj_generator.ui.import_progress import parse_content_progress_message
-from sj_generator.ui.import_workers import AiImportContentWorker
-from sj_generator.ui.message_box import show_message_box
+from .import_page_common import style_busy_progress
+from .import_progress import parse_content_progress_message
+from .import_db_service import commit_draft_questions_to_db
+from .import_workers import AiImportContentWorker
+from sj_generator.presentation.qt.message_box import show_message_box
 from .content_support import (
     apply_content_compare_payload,
     apply_content_detail_column_widths_if_needed,
@@ -43,7 +43,7 @@ from .content_support import (
     create_content_worker_bundle,
     missing_content_model_labels,
 )
-from sj_generator.ui.table_copy import CopyableTableWidget
+from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
 
 class AiImportContentPage(QWizardPage):
