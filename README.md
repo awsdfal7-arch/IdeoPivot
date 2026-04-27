@@ -51,6 +51,18 @@ python main.py
 - 目录版程序：`dist/思政智题云枢/`
 - 安装包：`installer_output/sj-generator-setup-cn-dev.exe`
 
+最简单的方式是直接运行：
+
+```bat
+build_installer.bat
+```
+
+如需指定版本号：
+
+```bat
+build_installer.bat 0.1.0
+```
+
 如需重新构建：
 
 ```powershell
@@ -68,6 +80,7 @@ powershell -ExecutionPolicy Bypass -File .\build_windows_installer.ps1 -Clean -I
 - `reference/`：参考资料与内置资源
 - `installer_languages/`：安装包语言文件
 - `installer_output/`：安装包输出目录
+- `build_installer.bat`：一键打包安装包脚本
 - `build_windows_onedir.ps1`：目录版构建脚本
 - `build_windows_installer.ps1`：安装包构建脚本
 - `installer_inno.iss`：Inno Setup 安装脚本

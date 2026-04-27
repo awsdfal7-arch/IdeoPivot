@@ -11,6 +11,15 @@ $InstallerScript = Join-Path $ProjectRoot "installer_inno.iss"
 $OutputDir = Join-Path $ProjectRoot "installer_output"
 $OutputBaseName = "sj-generator-setup-cn-dev"
 
+function Resolve-ExpectedInstallerPath {
+    param(
+        [string]$Directory,
+        [string]$BaseName
+    )
+
+    return Join-Path $Directory ($BaseName + ".exe")
+}
+
 function Resolve-IsccPath {
     param([string]$Candidate)
 
@@ -58,7 +67,28 @@ try {
         $OutputBaseName = "sj-generator-setup-cn-$AppVersion"
     }
 
+    $expectedInstallerPath = Resolve-ExpectedInstallerPath -Directory $OutputDir -BaseName $OutputBaseName
+    Remove-Item $expectedInstallerPath -Force -ErrorAction SilentlyContinue
+
     & $resolvedIscc ("/O" + $OutputDir) ("/F" + $OutputBaseName) $InstallerScript
+
+    if (Test-Path $expectedInstallerPath) {
+        Write-Host "Installer created: $expectedInstallerPath"
+        return
+    }
+
+    $fallbackInstaller = Get-ChildItem -Path $OutputDir -Filter *.exe -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($fallbackInstaller) {
+        if ($fallbackInstaller.FullName -ne $expectedInstallerPath) {
+            Move-Item -Force $fallbackInstaller.FullName $expectedInstallerPath
+        }
+        Write-Host "Installer created: $expectedInstallerPath"
+        return
+    }
+
+    throw "Installer build finished but no .exe was found in $OutputDir."
 }
 finally {
     Pop-Location
