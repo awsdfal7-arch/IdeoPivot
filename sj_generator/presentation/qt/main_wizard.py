@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QWizard
 
@@ -19,6 +19,7 @@ from sj_generator.application.state import (
     normalize_preferred_textbook_version,
 )
 from sj_generator.ui.styles import APP_STYLESHEET
+from sj_generator.ui.import_costs import begin_app_import_cost_capture
 from sj_generator.ui.constants import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
@@ -26,8 +27,9 @@ from sj_generator.ui.constants import (
     PAGE_WELCOME,
     QT_MAX_WINDOW_SIZE,
 )
+from sj_generator.presentation.qt.pages.intro_page import IntroPage
+from sj_generator.presentation.qt.pages.welcome_page import WelcomePage
 from sj_generator.ui.wizard_base import AppWizardBase
-from sj_generator.ui.pages.intro_pages import IntroPage
 
 
 class GeneratorWizard(AppWizardBase):
@@ -45,6 +47,8 @@ class GeneratorWizard(AppWizardBase):
         self._state = WizardState()
         self._welcome_page_loaded = False
         self._apply_saved_program_settings()
+        begin_app_import_cost_capture()
+        QTimer.singleShot(0, lambda: begin_app_import_cost_capture(retry_if_empty=True))
         self.setPage(PAGE_INTRO, IntroPage())
         self.cache_and_hide_page_titles()
         self.setStartId(PAGE_INTRO)
@@ -118,10 +122,9 @@ class GeneratorWizard(AppWizardBase):
         )
 
     def _ensure_welcome_page_loaded(self) -> None:
+        begin_app_import_cost_capture(retry_if_empty=True)
         if self._welcome_page_loaded:
             return
-        from sj_generator.ui.pages.welcome_pages import WelcomePage
-
         page = WelcomePage(self._state)
         self.setPage(PAGE_WELCOME, page)
         self.cache_and_hide_page_title(PAGE_WELCOME)

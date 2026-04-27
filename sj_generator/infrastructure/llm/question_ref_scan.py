@@ -137,6 +137,7 @@ def run_question_ref_scan(
     all_results: list[dict[str, object]] = []
     last_round_results: dict[str, list[dict[str, str]]] = {}
     last_round_markers: dict[str, str] = {}
+    last_round_elapsed_s: dict[str, int] = {}
     accepted = False
     best_count = 0
     executed_rounds = 0
@@ -145,6 +146,7 @@ def run_question_ref_scan(
     for round_index in range(1, round_limit + 1):
         round_results: dict[str, list[dict[str, str]]] = {}
         round_markers: dict[str, str] = {}
+        round_elapsed_s: dict[str, int] = {}
         round_started_at = time.monotonic()
         if progress_cb is not None:
             progress_cb(
@@ -176,12 +178,14 @@ def run_question_ref_scan(
                     round_markers[model_key] = f"识别失败：{e}"
                     items = []
                 if progress_cb is not None:
+                    elapsed_s = int(max(0.0, time.monotonic() - round_started_at))
+                    round_elapsed_s[model_key] = elapsed_s
                     progress_cb(
                         {
                             "event": "model_finished",
                             "round": round_index,
                             "model_key": model_key,
-                            "elapsed_s": int(max(0.0, time.monotonic() - round_started_at)),
+                            "elapsed_s": elapsed_s,
                             "marker": round_markers.get(model_key, ""),
                             "item_count": len(items),
                         }
@@ -198,6 +202,7 @@ def run_question_ref_scan(
 
         last_round_results = round_results
         last_round_markers = round_markers
+        last_round_elapsed_s = round_elapsed_s
         executed_rounds = round_index
 
         if round_markers:
@@ -238,6 +243,7 @@ def run_question_ref_scan(
         "final_refs": best_items,
         "results": last_round_results,
         "markers": last_round_markers,
+        "elapsed_s_by_model": last_round_elapsed_s,
     }
 
 

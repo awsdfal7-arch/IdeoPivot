@@ -91,3 +91,8 @@ def welcome_view_config_path() -> Path:
 def program_settings_path() -> Path:
     env = os.getenv("SJ_GENERATOR_PROGRAM_SETTINGS_PATH", "").strip()
     return Path(env) if env else default_config_dir() / "program_settings.json"
+
+
+def import_cost_history_path() -> Path:
+    env = os.getenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", "").strip()
+    return Path(env) if env else default_config_dir() / "import_cost_history.json"

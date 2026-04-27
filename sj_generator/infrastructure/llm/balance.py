@@ -53,15 +53,7 @@ def describe_deepseek_balance(cfg: DeepSeekConfig) -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-
-    parts = _format_deepseek_balance_infos(data.get("balance_infos") or [])
-    if not parts:
-        detail = "已配置，余额接口已响应，但未返回可展示余额"
-    else:
-        detail = "已配置，余额 " + "；".join(parts)
-    if data.get("is_available") is False:
-        detail += "（当前账户不可用）"
-    return detail
+    return _describe_deepseek_balance_payload(data)
 
 
 def describe_kimi_balance(cfg: KimiConfig) -> str:
@@ -121,7 +113,7 @@ def query_deepseek_balance_snapshot(cfg: DeepSeekConfig) -> ProviderBalanceSnaps
     resp.raise_for_status()
     data = resp.json()
     balance_infos = [item for item in (data.get("balance_infos") or []) if isinstance(item, dict)]
-    detail = describe_deepseek_balance(cfg)
+    detail = _describe_deepseek_balance_payload(data)
     amount, currency = _sum_balance_infos(balance_infos)
     return ProviderBalanceSnapshot("deepseek", currency, amount, detail)
 
@@ -198,6 +190,18 @@ def _format_deepseek_balance_infos(balance_infos: list[dict]) -> list[str]:
         topped_up = _format_money(item.get("topped_up_balance"), currency)
         parts.append(f"{currency} {total}（赠送 {granted}，充值 {topped_up}）")
     return parts
+
+
+def _describe_deepseek_balance_payload(data: object) -> str:
+    payload = data if isinstance(data, dict) else {}
+    parts = _format_deepseek_balance_infos(payload.get("balance_infos") or [])
+    if not parts:
+        detail = "已配置，余额接口已响应，但未返回可展示余额"
+    else:
+        detail = "已配置，余额 " + "；".join(parts)
+    if payload.get("is_available") is False:
+        detail += "（当前账户不可用）"
+    return detail
 
 
 def _sum_balance_infos(balance_infos: list[dict]) -> tuple[Decimal, str]:

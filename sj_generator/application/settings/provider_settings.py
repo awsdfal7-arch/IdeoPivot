@@ -273,24 +273,25 @@ def load_qwen_config() -> QwenConfig:
     file_timeout = file_cfg.get("timeout_s")
     timeout_s = QwenConfig.timeout_s
     try:
-        if env_timeout:
-            timeout_s = float(env_timeout)
-        elif file_timeout is not None:
+        if file_timeout is not None:
             timeout_s = float(file_timeout)
+        elif env_timeout:
+            timeout_s = float(env_timeout)
     except Exception:
         timeout_s = QwenConfig.timeout_s
 
     return QwenConfig(
-        base_url=clean_base_url(env_base_url or file_cfg.get("base_url") or QwenConfig.base_url),
-        api_key=env_api_key,
+        base_url=clean_base_url(file_cfg.get("base_url") or env_base_url or QwenConfig.base_url),
+        api_key=str(file_cfg.get("api_key") or "").strip() or env_api_key,
         number_model=(
             project_number_model
+            or str(file_cfg.get("question_number_model") or file_cfg.get("number_model") or file_cfg.get("model") or "").strip()
             or env_number_model
-            or str(file_cfg.get("question_number_model") or file_cfg.get("number_model") or file_cfg.get("model") or QwenConfig.number_model).strip()
+            or QwenConfig.number_model
         ),
-        model=(project_unit_model or env_model or file_cfg.get("model") or QwenConfig.model).strip(),
-        account_access_key_id=env_account_access_key_id,
-        account_access_key_secret=env_account_access_key_secret,
+        model=(project_unit_model or str(file_cfg.get("model") or "").strip() or env_model or QwenConfig.model).strip(),
+        account_access_key_id=str(file_cfg.get("account_access_key_id") or "").strip() or env_account_access_key_id,
+        account_access_key_secret=str(file_cfg.get("account_access_key_secret") or "").strip() or env_account_access_key_secret,
         timeout_s=timeout_s,
     )
 
@@ -298,14 +299,14 @@ def load_qwen_config() -> QwenConfig:
 def save_qwen_config(cfg: QwenConfig) -> None:
     path = qwen_config_path()
     data = load_json_config_file(path)
-    data.pop("api_key", None)
-    data.pop("account_access_key_id", None)
-    data.pop("account_access_key_secret", None)
     data.update(
         {
             "base_url": clean_base_url(cfg.base_url),
+            "api_key": cfg.api_key.strip(),
             "question_number_model": cfg.number_model.strip(),
             "model": cfg.model.strip(),
+            "account_access_key_id": cfg.account_access_key_id.strip(),
+            "account_access_key_secret": cfg.account_access_key_secret.strip(),
             "timeout_s": cfg.timeout_s,
         }
     )

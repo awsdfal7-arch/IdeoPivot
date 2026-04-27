@@ -74,6 +74,9 @@ class LlmClient:
                 except Exception:
                     body = ""
                 if status is not None and status < 500:
+                    friendly = _friendly_http_error_message(status=status, body=body)
+                    if friendly:
+                        raise RuntimeError(friendly) from e
                     if body:
                         raise RuntimeError(f"HTTP {status}：{body}") from e
                     raise
@@ -131,3 +134,17 @@ def _pick_temperature(model: str) -> float:
     if m.startswith("kimi-k2.6") or m.startswith("kimi-k2.5"):
         return 1.0
     return 0.0
+
+
+def _friendly_http_error_message(*, status: int, body: str) -> str:
+    body_text = (body or "").strip()
+    body_lower = body_text.lower()
+    if status == 402 or "insufficient balance" in body_lower:
+        return "接口调用失败：余额不足，请先充值或切换到有余额的模型配置后再重试。"
+    if status == 401:
+        return "接口调用失败：API Key 无效或已过期，请检查模型配置。"
+    if status == 403:
+        return "接口调用失败：当前账号无权访问该模型或接口，请检查权限配置。"
+    if status == 429:
+        return "接口调用失败：请求过于频繁，请稍后重试。"
+    return ""

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from typing import Callable
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QAction
-from sj_generator.infrastructure.llm.balance import describe_deepseek_balance, describe_kimi_balance, describe_qwen_balance
+from sj_generator.infrastructure.llm.balance import (
+    describe_deepseek_balance,
+    describe_kimi_balance,
+    describe_qwen_balance,
+    query_deepseek_balance_snapshot,
+    query_kimi_balance_snapshot,
+    query_qwen_balance_snapshot,
+)
 from sj_generator.infrastructure.llm.client import LlmConfig
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -60,7 +68,9 @@ from sj_generator.application.settings import (
     to_qwen_llm_config,
     with_capped_timeout,
 )
+from sj_generator.application.settings.import_cost_history import append_balance_history_for_provider_results
 from sj_generator.infrastructure.llm.task_runner import run_callables_in_parallel_fail_fast
+from sj_generator.ui.import_cost_history_dialog import ImportCostHistoryDialog
 from sj_generator.ui.table_copy import CopyableTableWidget
 from sj_generator.application.state import AI_CONCURRENCY_OPTIONS, normalize_ai_concurrency, normalize_analysis_model_name, normalize_analysis_provider
 
@@ -153,16 +163,20 @@ class ApiConfigDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self._test_all_btn = QPushButton("统一测试")
+        self._view_cost_history_btn = QPushButton("查看余额日志")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         self._test_all_btn.clicked.connect(self._on_test_all)
+        self._view_cost_history_btn.clicked.connect(self._open_import_cost_history_dialog)
         _style_dialog_button(self._test_all_btn, "统一测试")
+        _style_dialog_button(self._view_cost_history_btn, "查看余额日志")
         _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Ok), "确定")
         _style_dialog_button(buttons.button(QDialogButtonBox.StandardButton.Cancel), "取消")
 
         layout = QVBoxLayout()
         layout.addWidget(tabs)
         button_row = QHBoxLayout()
+        button_row.addWidget(self._view_cost_history_btn)
         button_row.addStretch(1)
         button_row.addWidget(self._test_all_btn)
         button_row.addWidget(buttons)
@@ -295,6 +309,7 @@ class ApiConfigDialog(QDialog):
         if data.get("project_tested"):
             self._project_tab.apply_test_success(data.get("project_result"), show_message=False)
             tested_labels.append("项目配置模型")
+        append_balance_history_for_provider_results(data.get("api_results") or [], source_label="统一测试")
         if tested_labels:
             summary = "、".join(tested_labels)
             message = f"{summary} 测试通过，余额已刷新。"
@@ -322,6 +337,9 @@ class ApiConfigDialog(QDialog):
         self._test_worker = None
         self._testing_api_keys = []
         self._testing_project = False
+
+    def _open_import_cost_history_dialog(self) -> None:
+        ImportCostHistoryDialog(self).exec()
 
 
 class _ConfigValidationError(Exception):
@@ -408,17 +426,52 @@ def _to_fast_test_llm_config(cfg: LlmConfig) -> LlmConfig:
 
 
 def _query_balance_text_for_cfg(cfg) -> str:
+    return _query_balance_result_for_cfg(cfg)["balance_text"]
+
+
+def _format_balance_amount(currency: str, amount: Decimal) -> str:
+    prefix = {"CNY": "¥", "USD": "$"}.get((currency or "").upper(), "")
+    if prefix:
+        return f"{prefix}{amount:.4f}"
+    return f"{(currency or 'UNKNOWN').upper()} {amount:.4f}"
+
+
+def _query_balance_result_for_cfg(cfg) -> dict[str, str]:
     cfg = with_capped_timeout(cfg, FAST_TEST_TIMEOUT_S)
     try:
         if isinstance(cfg, DeepSeekConfig):
-            return describe_deepseek_balance(cfg)
+            if not cfg.is_ready():
+                return {"balance_text": "未配置", "balance_value": ""}
+            snapshot = query_deepseek_balance_snapshot(cfg)
+            if snapshot is None:
+                return {"balance_text": "未配置", "balance_value": ""}
+            return {
+                "balance_text": snapshot.detail,
+                "balance_value": _format_balance_amount(snapshot.currency, Decimal(str(snapshot.amount))),
+            }
         if isinstance(cfg, KimiConfig):
-            return describe_kimi_balance(cfg)
+            if not cfg.is_ready():
+                return {"balance_text": "未配置", "balance_value": ""}
+            snapshot = query_kimi_balance_snapshot(cfg)
+            if snapshot is None:
+                return {"balance_text": describe_kimi_balance(cfg), "balance_value": ""}
+            return {
+                "balance_text": snapshot.detail,
+                "balance_value": _format_balance_amount(snapshot.currency, Decimal(str(snapshot.amount))),
+            }
         if isinstance(cfg, QwenConfig):
-            return describe_qwen_balance(cfg)
+            if not cfg.is_ready() and not cfg.has_account_balance_credentials():
+                return {"balance_text": "未配置", "balance_value": ""}
+            snapshot = query_qwen_balance_snapshot(cfg)
+            if snapshot is None:
+                return {"balance_text": describe_qwen_balance(cfg), "balance_value": ""}
+            return {
+                "balance_text": snapshot.detail,
+                "balance_value": _format_balance_amount(snapshot.currency, Decimal(str(snapshot.amount))),
+            }
     except Exception as e:
-        return f"查询失败：{e}"
-    return "未配置"
+        return {"balance_text": f"查询失败：{e}", "balance_value": ""}
+    return {"balance_text": "未配置", "balance_value": ""}
 
 
 def _run_api_connectivity_test(title: str, cfg, to_llm_fn: Callable[[object], object]) -> dict[str, object]:
@@ -438,19 +491,25 @@ def _run_api_connectivity_test(title: str, cfg, to_llm_fn: Callable[[object], ob
         callables=[lambda llm_cfg=llm_cfg: check_one(llm_cfg) for llm_cfg in config_map.values()],
         max_workers=min(2, len(config_map)),
     )
+    balance_result = _query_balance_result_for_cfg(cfg)
     return {
         "cfg": cfg,
-        "balance_text": _query_balance_text_for_cfg(cfg),
+        "balance_text": balance_result["balance_text"],
+        "balance_value": balance_result["balance_value"],
         "connectivity_tested": True,
     }
 
 
 def _run_api_balance_refresh(cfg) -> dict[str, object]:
+    balance_result = _query_balance_result_for_cfg(cfg)
     return {
         "cfg": cfg,
-        "balance_text": _query_balance_text_for_cfg(cfg),
+        "balance_text": balance_result["balance_text"],
+        "balance_value": balance_result["balance_value"],
         "connectivity_tested": False,
     }
+
+
 
 
 def _build_analysis_llm_config(
@@ -659,6 +718,8 @@ class _ProjectConfigTab(QWidget):
         self._analysis_target_combo.setCurrentText(_analysis_target_text(initial_provider, initial_model_name))
         self._question_content_concurrency_combo = QComboBox()
         self._analysis_generation_concurrency_combo = QComboBox()
+        self._question_content_concurrency_combo.setMinimumWidth(120)
+        self._analysis_generation_concurrency_combo.setMinimumWidth(120)
         for value in AI_CONCURRENCY_OPTIONS:
             self._question_content_concurrency_combo.addItem(str(value), value)
             self._analysis_generation_concurrency_combo.addItem(str(value), value)
@@ -675,7 +736,7 @@ class _ProjectConfigTab(QWidget):
         concurrency_layout.setContentsMargins(0, 0, 0, 0)
         concurrency_layout.addWidget(QLabel("题目内容解析"))
         concurrency_layout.addWidget(self._question_content_concurrency_combo)
-        concurrency_layout.addSpacing(12)
+        concurrency_layout.addSpacing(20)
         concurrency_layout.addWidget(QLabel("答案解析生成"))
         concurrency_layout.addWidget(self._analysis_generation_concurrency_combo)
         concurrency_layout.addStretch(1)
@@ -786,7 +847,6 @@ class _ProjectConfigTab(QWidget):
                 selector = table.cellWidget(row, col)
                 if isinstance(selector, _GroupedModelSelector):
                     selector.reload_candidates()
-        self._reset_tested()
 
     def _analysis_target_key(self, provider: str, model_name: str) -> str:
         return f"{normalize_analysis_provider(provider)}|{normalize_analysis_model_name(model_name)}"

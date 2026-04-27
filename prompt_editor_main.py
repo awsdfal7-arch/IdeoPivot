@@ -34,8 +34,11 @@ class PromptEditorWindow(QWidget):
         self._status_label.setWordWrap(True)
         self._path_label = QLabel(f"配置文件：{import_prompt_config_path()}")
         self._path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        placeholders = self._all_placeholders()
         self._placeholder_label = QLabel(
-            "支持占位符：{{source_name}}、{{chunk_text}}、{{requested_number}}。"
+            "支持占位符：" + "、".join(placeholders) + "。"
+            if placeholders
+            else "当前没有可用占位符。"
         )
         self._placeholder_label.setWordWrap(True)
 
@@ -60,7 +63,7 @@ class PromptEditorWindow(QWidget):
         button_row.addWidget(self._save_btn)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("主导入流程提示词编辑"))
+        layout.addWidget(QLabel("主导入流程与解析生成提示词编辑"))
         layout.addWidget(self._path_label)
         layout.addWidget(self._placeholder_label)
         layout.addWidget(self._tab_widget, 1)
@@ -69,6 +72,17 @@ class PromptEditorWindow(QWidget):
         self.setLayout(layout)
 
         self._load_prompts()
+
+    def _all_placeholders(self) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for field in PROMPT_FIELDS:
+            for placeholder in field.placeholders:
+                if placeholder in seen:
+                    continue
+                seen.add(placeholder)
+                ordered.append(placeholder)
+        return ordered
 
     def _build_tab(self, field) -> QWidget:
         page = QWidget()

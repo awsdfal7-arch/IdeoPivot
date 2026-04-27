@@ -42,4 +42,4 @@ def app_paths(base_dir: Path | None = None) -> AppPaths:
 
 
 def common_mistakes_md_path(base_dir: Path | None = None) -> Path:
-    return app_paths(base_dir).reference_mistakes_dir / "选择题常见错题归因与答题策略分析.md"
+    return app_paths(base_dir).reference_mistakes_dir / "选择题常见错题归因.md"

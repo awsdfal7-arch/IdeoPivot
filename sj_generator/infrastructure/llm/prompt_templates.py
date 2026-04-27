@@ -37,6 +37,28 @@ PROMPT_FIELDS: tuple[PromptField, ...] = (
         description="按题号与题型提取时发送给模型的用户提示词模板。",
         placeholders=("{{source_name}}", "{{requested_number}}", "{{requested_question_type}}", "{{chunk_text}}"),
     ),
+    PromptField(
+        key="explanation_system",
+        title="解析生成 System Prompt",
+        description="补解析阶段生成答案解析时使用的系统提示词。",
+    ),
+    PromptField(
+        key="explanation_user",
+        title="解析生成 User Prompt",
+        description="补解析阶段发送给模型的用户提示词模板。",
+        placeholders=("{{question_text}}", "{{answer_text}}", "{{reference_block}}", "{{mistakes_block}}"),
+    ),
+    PromptField(
+        key="explanation_fill_answer_system",
+        title="补答案解析 System Prompt",
+        description="缺少答案时，先补答案再生成解析使用的系统提示词。",
+    ),
+    PromptField(
+        key="explanation_fill_answer_user",
+        title="补答案解析 User Prompt",
+        description="缺少答案时发送给模型的用户提示词模板。",
+        placeholders=("{{question_text}}", "{{reference_block}}", "{{mistakes_block}}"),
+    ),
 )
 
 
@@ -131,6 +153,62 @@ DEFAULT_IMPORT_PROMPTS: dict[str, str] = {
         "-----\n"
         "{{chunk_text}}\n"
         "-----\n"
+    ),
+    "explanation_system": (
+        "你是一个专业的教育助手，擅长讲解选择题。请严格遵循用户的格式要求。"
+    ),
+    "explanation_user": (
+        "请严格按照以下格式输出解析：\n"
+        "如果“答案文本”为空，先根据题目、参考资料与常见错题参考判断最可能的正确答案，并在第一行单独输出“答案：答案标识”。\n"
+        "如果“答案文本”不为空，直接基于给定答案输出逐项解析，不要重复输出“答案：...”。\n"
+        "每行分析一个选项。\n"
+        "必须沿用题目中出现的选项标识（例如 A/B/C/D 或 ①/②/③/④），不要擅自改成另一种编号方式。\n"
+        "如果是错误选项：必须先指出“具体的错误原因类型”（可以多个，用中文分号“；”分隔），然后再做详细分析。\n"
+        "如果是正确选项：必须标记为“正确”，并说明理由。\n"
+        "同一选项允许多个错误原因，需要一并列出。\n"
+        "\n"
+        "示例格式：\n"
+        "答案：AC\n"
+        "- A：**知识模块归类错误** ...\n"
+        "- B：**正确** ...\n"
+        "- C：**偷换概念；范围扩大** ...\n"
+        "或：\n"
+        "答案：B\n"
+        "- ①：**知识模块归类错误** ...\n"
+        "- ②：**正确** ...\n"
+        "- ③：**偷换概念；范围扩大** ...\n"
+        "\n"
+        "题目文本：\n"
+        "{{question_text}}\n"
+        "\n"
+        "答案文本：\n"
+        "{{answer_text}}\n"
+        "{{reference_block}}"
+        "{{mistakes_block}}"
+    ),
+    "explanation_fill_answer_system": (
+        "你是一个思政选择题解析助手。"
+        "当题目原文没有提供答案时，你需要先根据题干、选项和参考资料判断最可能的正确答案，再输出逐项解析。"
+        "你必须仅输出严格 JSON，不要输出 markdown、代码块或额外说明。\n"
+        "输出格式固定为："
+        '{"answer_text":"答案标识","analysis_text":"逐项解析"}' "\n"
+        "answer_text 规则：\n"
+        "- 单选输出单个字母，如 A。\n"
+        "- 多选输出紧凑字母组合，如 ACD。\n"
+        "- 可转多选输出正常字母答案 A/B/C/D，不要输出圆圈序号。\n"
+        "- 不要包含“答案”二字、冒号、句号、空格、逗号、顿号或解释文字。\n"
+        "analysis_text 规则：\n"
+        "- 每行分析一个选项。\n"
+        "- 必须沿用题目中出现的选项标识。\n"
+        "- 正确选项标记为“正确”并说明理由；错误选项先写错误原因类型，再分析。\n"
+        "- 只输出纯文本解析，不要再包一层 JSON 或 markdown。\n"
+    ),
+    "explanation_fill_answer_user": (
+        "请先判断这道题最可能的正确答案，再输出答案和逐项解析。\n"
+        "题目文本：\n"
+        "{{question_text}}\n"
+        "{{reference_block}}"
+        "{{mistakes_block}}"
     ),
 }
 

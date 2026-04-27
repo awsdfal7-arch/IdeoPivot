@@ -3,7 +3,8 @@ from __future__ import annotations
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QWizard
 
-from sj_generator.application.state import WizardState
+from sj_generator.application.state import ImportWizardSession
+from sj_generator.presentation.qt.pages import register_import_flow_pages
 from sj_generator.ui.constants import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
@@ -16,49 +17,40 @@ from sj_generator.ui.constants import (
     QT_MAX_WINDOW_SIZE,
 )
 from sj_generator.ui.wizard_base import AppWizardBase
-from sj_generator.ui.pages.analysis_pages import AiAnalysisPage
-from sj_generator.ui.pages.dedupe_pages import DedupeResultPage
-from sj_generator.ui.pages.export_pages import ImportSuccessPage
-from sj_generator.ui.pages.import_flow import AiImportContentPage, AiImportPage, AiSelectFilesPage
 
 BUTTON_MIN_WIDTH = 128
 BUTTON_MIN_HEIGHT = 40
 
 
-def configure_import_flow_pages(wizard: QWizard, state: WizardState) -> None:
-    wizard.setPage(PAGE_AI_SELECT, AiSelectFilesPage(state))
-    wizard.setPage(PAGE_AI_IMPORT, AiImportPage(state))
-    wizard.setPage(PAGE_AI_IMPORT_CONTENT, AiImportContentPage(state))
-    wizard.setPage(PAGE_DEDUPE_RESULT, DedupeResultPage(state))
-    wizard.setPage(PAGE_AI_ANALYSIS, AiAnalysisPage(state))
-    wizard.setPage(PAGE_IMPORT_SUCCESS, ImportSuccessPage(state))
+def configure_import_flow_pages(wizard: QWizard, state: ImportWizardSession) -> None:
+    register_import_flow_pages(wizard, state)
 
 
 class ImportFlowWizard(AppWizardBase):
-    def __init__(self, state: WizardState, parent=None, *, launcher=None, start_page_id: int = PAGE_AI_SELECT) -> None:
+    def __init__(self, state: ImportWizardSession, parent=None, *, launcher=None, start_page_id: int = PAGE_AI_SELECT) -> None:
         super().__init__(parent)
         self._state = state
         self._launcher = launcher
         self._start_page_id = start_page_id
+        self._deferred_close_requested = False
         self.apply_button_texts(
             {
-                QWizard.WizardButton.BackButton: "返回",
                 QWizard.WizardButton.CustomButton1: "添加文档",
                 QWizard.WizardButton.CustomButton2: "打开文档",
+                QWizard.WizardButton.CustomButton3: "打开文档",
                 QWizard.WizardButton.NextButton: "开始导题",
-                QWizard.WizardButton.FinishButton: "完成",
             }
         )
         self.setOption(QWizard.WizardOption.HaveCustomButton1, True)
         self.setOption(QWizard.WizardOption.HaveCustomButton2, True)
+        self.setOption(QWizard.WizardOption.HaveCustomButton3, True)
         self.setButtonLayout(
             [
-                QWizard.WizardButton.Stretch,
                 QWizard.WizardButton.CustomButton1,
                 QWizard.WizardButton.CustomButton2,
-                QWizard.WizardButton.BackButton,
+                QWizard.WizardButton.CustomButton3,
+                QWizard.WizardButton.Stretch,
                 QWizard.WizardButton.NextButton,
-                QWizard.WizardButton.FinishButton,
             ]
         )
         configure_import_flow_pages(self, self._state)
@@ -82,9 +74,8 @@ class ImportFlowWizard(AppWizardBase):
         for which in (
             QWizard.WizardButton.CustomButton1,
             QWizard.WizardButton.CustomButton2,
-            QWizard.WizardButton.BackButton,
+            QWizard.WizardButton.CustomButton3,
             QWizard.WizardButton.NextButton,
-            QWizard.WizardButton.FinishButton,
         ):
             button = self.button(which)
             if button is None:
@@ -103,29 +94,59 @@ class ImportFlowWizard(AppWizardBase):
         button2 = self.button(QWizard.WizardButton.CustomButton2)
         if button2 is not None:
             button2.setVisible(False)
+        button3 = self.button(QWizard.WizardButton.CustomButton3)
+        if button3 is not None:
+            button3.setVisible(False)
+        back_button = self.button(QWizard.WizardButton.BackButton)
+        if back_button is not None:
+            back_button.setVisible(False)
+        cancel_button = self.button(QWizard.WizardButton.CancelButton)
+        if cancel_button is not None:
+            cancel_button.setVisible(False)
+        finish_button = self.button(QWizard.WizardButton.FinishButton)
+        if finish_button is not None:
+            finish_button.setVisible(False)
         handler = getattr(page, "_sync_custom_wizard_button", None)
         if callable(handler):
             handler()
+
+    def back(self) -> None:
+        # 导入向导进入下一页后不允许回退到上一步。
+        return
 
     def accept(self) -> None:
         super().accept()
 
     def reject(self) -> None:
         if not self._can_close_current_page():
+            self._deferred_close_requested = True
+            self.hide()
             return
         super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._can_close_current_page():
+            self._deferred_close_requested = True
+            self.hide()
             event.ignore()
             return
+        self._deferred_close_requested = False
         super().closeEvent(event)
 
     def _can_close_current_page(self) -> bool:
-        page = self.currentPage()
-        guard = getattr(page, "prepare_to_close", None)
-        if callable(guard):
-            return bool(guard())
+        page_ids = (
+            PAGE_AI_SELECT,
+            PAGE_AI_IMPORT,
+            PAGE_AI_IMPORT_CONTENT,
+            PAGE_DEDUPE_RESULT,
+            PAGE_AI_ANALYSIS,
+            PAGE_IMPORT_SUCCESS,
+        )
+        for page_id in page_ids:
+            page = self.page(page_id)
+            guard = getattr(page, "prepare_to_close", None)
+            if callable(guard) and not bool(guard()):
+                return False
         return True
 
     def open_additional_documents(self, source_paths, *, message_parent=None) -> bool:

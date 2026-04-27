@@ -10,22 +10,39 @@ from openpyxl import Workbook, load_workbook
 import pytest
 from sj_generator.infrastructure.persistence.sqlite_repo import DbQuestionRecord, append_questions, delete_question_by_id, load_all_questions
 
-from sj_generator.ai import balance as balance_mod
-from sj_generator.ai import import_questions as iq
-from sj_generator.ai import prompt_templates as prompt_mod
+from sj_generator.infrastructure.llm import balance as balance_mod
+from sj_generator.infrastructure.llm import explanations as explanations_mod
+from sj_generator.infrastructure.llm import import_questions as iq
+from sj_generator.infrastructure.llm import prompt_templates as prompt_mod
 from sj_generator.infrastructure.llm.client import _pick_temperature
 from sj_generator.infrastructure.llm.import_questions import ImportResult
 from sj_generator.infrastructure.llm.task_runner import run_callables_in_parallel_fail_fast, run_tasks_in_parallel
-from sj_generator.io import batch_ai_import as batch_ai
+from sj_generator.application.importing import batch_ai_import as batch_ai
 from sj_generator.application.exporting.batch_folderize import process_excel_to_folder_mode
 from sj_generator.infrastructure.persistence.draft_db_import import draft_questions_to_db_records
 from sj_generator.infrastructure.exporting.export_md import _normalize_numbers, export_questions_to_markdown
 from sj_generator.domain.entities import Question
-from sj_generator import config as cfg_mod
+from sj_generator.application import settings as cfg_mod
+from sj_generator.application.settings.import_cost_history import (
+    append_balance_history_for_provider_results,
+    clear_import_cost_history,
+    append_import_cost_history_entry,
+    build_total_balance_text,
+    load_import_cost_history_rows,
+)
 from sj_generator.ui.compare_highlight import compare_highlight_model_styles
-from sj_generator.ui.import_costs import capture_import_cost_before, freeze_import_cost_result
+from sj_generator.ui.import_costs import (
+    _reset_app_import_cost_capture_for_tests,
+    begin_app_import_cost_capture,
+    capture_import_cost_before,
+    capture_import_cost_before_async,
+    freeze_import_cost_result,
+    wait_import_cost_before_capture,
+)
 from sj_generator.application.state import (
+    ImportWizardSession,
     WizardState,
+    build_import_flow_session,
     default_repo_parent_dir,
     normalize_default_repo_parent_dir_text,
     normalize_ai_concurrency,
@@ -207,7 +224,8 @@ def test_save_program_analysis_target_persists(monkeypatch, tmp_path) -> None:
 
 
 def test_import_cost_tracking_builds_summary_from_balance_delta(monkeypatch) -> None:
-    state = WizardState(import_show_costs=True)
+    _reset_app_import_cost_capture_for_tests()
+    state = ImportWizardSession(import_show_costs=True)
 
     class Snapshot:
         def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
@@ -234,12 +252,345 @@ def test_import_cost_tracking_builds_summary_from_balance_delta(monkeypatch) -> 
     capture_import_cost_before(state)
     freeze_import_cost_result(state)
 
-    assert state.import_cost_ready is True
-    assert state.import_cost_total_text == "¥1.5000"
-    assert "DeepSeek" in state.import_cost_summary_text
-    assert "¥1.5000" in state.import_cost_summary_text
-    assert "Kimi" in state.import_cost_detail_text
-    assert any(row.get("provider") == "Kimi" for row in state.import_cost_rows)
+    assert state.execution.import_cost_ready is True
+    assert state.execution.import_cost_total_text == "¥1.5000"
+    assert "DeepSeek" in state.execution.import_cost_summary_text
+    assert "¥1.5000" in state.execution.import_cost_summary_text
+    assert "Kimi" in state.execution.import_cost_detail_text
+    assert any(row.get("provider") == "Kimi" for row in state.execution.import_cost_rows)
+
+
+def test_import_cost_before_async_does_not_block_page_transition(monkeypatch) -> None:
+    _reset_app_import_cost_capture_for_tests()
+    state = ImportWizardSession(import_show_costs=True)
+    started = threading.Event()
+    release = threading.Event()
+
+    class Snapshot:
+        def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
+            self.provider = provider
+            self.currency = currency
+            self.amount = Decimal(amount)
+            self.detail = detail
+
+    def fake_query_provider_balance_snapshots(**_kwargs):
+        started.set()
+        release.wait(2)
+        return [Snapshot("deepseek", "CNY", "100", "已配置，余额 CNY ¥100.00")]
+
+    monkeypatch.setattr("sj_generator.ui.import_costs.query_provider_balance_snapshots", fake_query_provider_balance_snapshots)
+
+    capture_import_cost_before_async(state)
+
+    assert started.wait(1) is True
+    assert state.execution.import_cost_before_loading is True
+    assert state.execution.import_cost_before_amounts == {}
+
+    release.set()
+    freeze_import_cost_result(state)
+
+    assert state.execution.import_cost_before_loading is False
+    assert state.execution.import_cost_before_amounts["deepseek"] == "CNY|100"
+
+
+def test_app_import_cost_capture_retries_when_initial_result_is_empty(monkeypatch) -> None:
+    _reset_app_import_cost_capture_for_tests()
+    state = ImportWizardSession(import_show_costs=True)
+
+    class Snapshot:
+        def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
+            self.provider = provider
+            self.currency = currency
+            self.amount = Decimal(amount)
+            self.detail = detail
+
+    calls = {"count": 0}
+
+    def fake_query_provider_balance_snapshots(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return []
+        return [Snapshot("deepseek", "CNY", "100", "已配置，余额 CNY ¥100.00")]
+
+    monkeypatch.setattr("sj_generator.ui.import_costs.query_provider_balance_snapshots", fake_query_provider_balance_snapshots)
+
+    begin_app_import_cost_capture()
+    wait_import_cost_before_capture(state)
+    assert state.execution.import_cost_before_amounts == {}
+
+    begin_app_import_cost_capture(retry_if_empty=True)
+    wait_import_cost_before_capture(state)
+
+    assert calls["count"] == 2
+    assert state.execution.import_cost_before_amounts["deepseek"] == "CNY|100"
+
+
+def test_app_import_cost_capture_writes_startup_balance_log(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+    _reset_app_import_cost_capture_for_tests()
+    state = ImportWizardSession(import_show_costs=True)
+
+    class Snapshot:
+        def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
+            self.provider = provider
+            self.currency = currency
+            self.amount = Decimal(amount)
+            self.detail = detail
+
+    def fake_query_provider_balance_snapshots(**_kwargs):
+        return [
+            Snapshot("deepseek", "CNY", "100", "已配置，余额 CNY ¥100.00"),
+            Snapshot("kimi", "CNY", "50", "已配置，余额 CNY ¥50.00"),
+        ]
+
+    monkeypatch.setattr("sj_generator.ui.import_costs.query_provider_balance_snapshots", fake_query_provider_balance_snapshots)
+
+    begin_app_import_cost_capture()
+    wait_import_cost_before_capture(state)
+
+    rows = load_import_cost_history_rows()
+
+    assert len(rows) == 1
+    assert rows[0]["run_at"].endswith("[启动]")
+    assert rows[0]["deepseek_balance"] == "¥100.0000"
+    assert rows[0]["kimi_balance"] == "¥50.0000"
+    assert rows[0]["qwen_balance"] == ""
+
+
+def test_test_all_results_append_balance_history(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+
+    append_balance_history_for_provider_results(
+        [
+            ("deepseek", {"balance_value": "¥10.5000"}),
+            ("kimi", {"balance_value": "¥20.0000"}),
+            ("qwen", {"balance_value": "¥30.0000"}),
+        ],
+        source_label="统一测试",
+    )
+
+    rows = load_import_cost_history_rows()
+
+    assert len(rows) == 1
+    assert rows[0]["run_at"].endswith("[统一测试]")
+    assert rows[0]["deepseek_balance"] == "¥10.5000"
+    assert rows[0]["kimi_balance"] == "¥20.0000"
+    assert rows[0]["qwen_balance"] == "¥30.0000"
+
+
+def test_clear_import_cost_history_empties_rows(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+
+    append_import_cost_history_entry(
+        run_at="2026-04-26 12:00:00",
+        provider_balances={"deepseek": "¥10.0000", "kimi": "¥20.0000", "qwen": "¥30.0000"},
+    )
+
+    clear_import_cost_history()
+
+    assert load_import_cost_history_rows() == []
+
+
+def test_import_cost_history_round_trip(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+
+    append_import_cost_history_entry(
+        run_at="2026-04-26 10:00:00",
+        before_provider_balances={"deepseek": "¥100.0000", "kimi": "¥50.0000", "qwen": ""},
+        provider_balances={"deepseek": "¥98.5000", "kimi": "¥50.0000", "qwen": ""},
+        total_balance="¥148.5000",
+        total_cost="¥1.5000",
+        cost_summary="DeepSeek ¥1.5000",
+        cost_detail="DeepSeek：¥1.5000",
+    )
+    append_import_cost_history_entry(
+        run_at="2026-04-26 11:00:00",
+        before_provider_balances={"deepseek": "¥98.5000", "kimi": "¥50.0000", "qwen": "$20.5000"},
+        provider_balances={"deepseek": "¥97.0000", "kimi": "¥49.5000", "qwen": "$20.0000"},
+        total_balance="¥146.5000；$20.0000",
+        total_cost="¥2.0000",
+        cost_summary="DeepSeek ¥1.5000；Kimi ¥0.5000",
+        cost_detail="DeepSeek：¥1.5000；Kimi：¥0.5000",
+    )
+
+    rows = load_import_cost_history_rows()
+
+    assert [row["run_at"] for row in rows] == ["2026-04-26 11:00:00", "2026-04-26 10:00:00"]
+    assert rows[0]["deepseek_balance"] == "¥97.0000"
+    assert rows[0]["kimi_balance"] == "¥49.5000"
+    assert rows[0]["qwen_balance"] == "$20.0000"
+
+
+def test_import_cost_history_prefers_more_complete_same_second_row(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+
+    append_import_cost_history_entry(
+        run_at="2026-04-26 10:00:00",
+        before_provider_balances={"deepseek": "¥100.0000", "kimi": "", "qwen": ""},
+        provider_balances={"deepseek": "¥100.0000", "kimi": "", "qwen": ""},
+        total_balance="¥100.0000",
+        total_cost="¥0.0000",
+        cost_summary="0",
+        cost_detail="DeepSeek：¥0.0000",
+    )
+    append_import_cost_history_entry(
+        run_at="2026-04-26 10:00:00",
+        before_provider_balances={"deepseek": "¥100.0000", "kimi": "¥50.0000", "qwen": ""},
+        provider_balances={"deepseek": "¥98.5000", "kimi": "¥50.0000", "qwen": ""},
+        total_balance="¥148.5000",
+        total_cost="¥1.5000",
+        cost_summary="DeepSeek ¥1.5000",
+        cost_detail="DeepSeek：¥1.5000；Kimi：¥0.0000",
+    )
+
+    rows = load_import_cost_history_rows()
+
+    assert len(rows) == 1
+    assert rows[0]["deepseek_balance"] == "¥98.5000"
+    assert rows[0]["kimi_balance"] == "¥50.0000"
+    assert rows[0]["qwen_balance"] == ""
+
+
+def test_build_total_balance_text_sums_by_currency() -> None:
+    total_text = build_total_balance_text(
+        {
+            "deepseek": "¥98.5000",
+            "kimi": "¥49.5000",
+            "qwen": "$20.0000",
+        }
+    )
+
+    assert total_text == "¥148.0000；$20.0000"
+
+
+def test_freeze_import_cost_result_appends_history_log(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SJ_GENERATOR_IMPORT_COST_HISTORY_PATH", str(tmp_path / "import_cost_history.json"))
+    _reset_app_import_cost_capture_for_tests()
+    state = ImportWizardSession(import_show_costs=True)
+
+    class Snapshot:
+        def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
+            self.provider = provider
+            self.currency = currency
+            self.amount = Decimal(amount)
+            self.detail = detail
+
+    calls = {"count": 0}
+
+    def fake_query_provider_balance_snapshots(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [
+                Snapshot("deepseek", "CNY", "100", "已配置，余额 CNY ¥100.00"),
+                Snapshot("kimi", "CNY", "60", "已配置，余额 CNY ¥60.00"),
+            ]
+        return [
+            Snapshot("deepseek", "CNY", "99", "已配置，余额 CNY ¥99.00"),
+            Snapshot("kimi", "CNY", "59.5", "已配置，余额 CNY ¥59.50"),
+        ]
+
+    monkeypatch.setattr("sj_generator.ui.import_costs.query_provider_balance_snapshots", fake_query_provider_balance_snapshots)
+
+    capture_import_cost_before(state)
+    freeze_import_cost_result(state)
+
+    rows = load_import_cost_history_rows()
+
+    assert len(rows) == 2
+    assert rows[0]["run_at"].endswith("[导入完成]")
+    assert rows[0]["deepseek_balance"] == "¥99.0000"
+    assert rows[0]["kimi_balance"] == "¥59.5000"
+    assert rows[0]["qwen_balance"] == ""
+    assert state.execution.import_cost_total_text == "¥1.5000"
+
+
+def test_import_cost_tracking_rolls_forward_after_each_import(monkeypatch) -> None:
+    _reset_app_import_cost_capture_for_tests()
+    first_state = ImportWizardSession(import_show_costs=True)
+    second_state = ImportWizardSession(import_show_costs=True)
+
+    class Snapshot:
+        def __init__(self, provider: str, currency: str, amount: str, detail: str) -> None:
+            self.provider = provider
+            self.currency = currency
+            self.amount = Decimal(amount)
+            self.detail = detail
+
+    calls = {"count": 0}
+
+    def fake_query_provider_balance_snapshots(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [Snapshot("deepseek", "CNY", "100", "已配置，余额 CNY ¥100.00")]
+        if calls["count"] == 2:
+            return [Snapshot("deepseek", "CNY", "98.5", "已配置，余额 CNY ¥98.50")]
+        return [Snapshot("deepseek", "CNY", "98.0", "已配置，余额 CNY ¥98.00")]
+
+    monkeypatch.setattr("sj_generator.ui.import_costs.query_provider_balance_snapshots", fake_query_provider_balance_snapshots)
+
+    freeze_import_cost_result(first_state)
+    freeze_import_cost_result(second_state)
+
+    assert first_state.execution.import_cost_total_text == "¥1.5000"
+    assert second_state.execution.import_cost_total_text == "¥0.5000"
+
+
+
+
+def test_build_import_flow_session_copies_settings_and_source_inputs(tmp_path) -> None:
+    base_state = WizardState(
+        project_dir=tmp_path / "导入项目",
+        repo_path=tmp_path / "导入项目" / "导入项目.xlsx",
+        last_export_dir=tmp_path / "导出",
+        project_name_is_placeholder=True,
+        dedupe_enabled=False,
+        analysis_enabled=False,
+        preferred_textbook_version="必修二",
+    )
+    source_path = tmp_path / "资料一.docx"
+    session = build_import_flow_session(base_state, source_files=[source_path])
+
+    assert session.project_dir == base_state.project_dir
+    assert session.repo_path == base_state.repo_path
+    assert session.last_export_dir == base_state.last_export_dir
+    assert session.project_name_is_placeholder is True
+    assert session.dedupe_enabled is False
+    assert session.analysis_enabled is False
+    assert session.source.files == [source_path]
+    assert session.source.files_text == str(source_path)
+    assert session.source.file_items[0].version == "必修二"
+
+
+def test_import_session_apply_question_refs_resets_downstream_state() -> None:
+    session = ImportWizardSession()
+    session.apply_draft_questions([Question(number="1", stem="题干", options="", answer="A", analysis="")])
+    session.set_dedupe_hits([])
+    session.execution.mark_db_import_completed(3)
+
+    session.apply_question_refs({"a.docx": [{"number": "1", "question_type": "单选"}]})
+
+    assert session.refs.revision == 1
+    assert session.refs.question_refs_by_source["a.docx"][0]["number"] == "1"
+    assert session.draft.questions == []
+    assert session.draft.dedupe_hits is None
+    assert session.execution.db_import_completed is False
+
+
+def test_import_session_build_import_session_preserves_settings_for_child_flow(tmp_path) -> None:
+    session = ImportWizardSession(
+        project_dir=tmp_path / "项目A",
+        repo_path=tmp_path / "项目A" / "项目A.xlsx",
+        analysis_enabled=False,
+        preferred_textbook_version="选择性必修一",
+    )
+
+    child = session.build_import_session(source_files=[tmp_path / "资料二.docx"])
+
+    assert child.project_dir == session.project_dir
+    assert child.repo_path == session.repo_path
+    assert child.analysis_enabled is False
+    assert child.preferred_textbook_version == "选择性必修一"
+    assert child.source.files_text.endswith("资料二.docx")
 
 
 def test_project_parse_model_rows_preserve_new_concurrency_settings(monkeypatch, tmp_path) -> None:
@@ -516,7 +867,7 @@ def test_deepseek_api_key_only_reads_from_env_and_is_not_saved(monkeypatch, tmp_
     assert cfg_mod.load_deepseek_config().api_key == "sk-env"
 
 
-def test_qwen_account_balance_credentials_only_read_from_env_and_not_saved(monkeypatch, tmp_path) -> None:
+def test_qwen_credentials_saved_to_file_and_file_overrides_env(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.delenv("SJ_GENERATOR_QWEN_CONFIG_PATH", raising=False)
     isolated_settings_path = tmp_path / "program_settings.json"
@@ -545,24 +896,32 @@ def test_qwen_account_balance_credentials_only_read_from_env_and_not_saved(monke
     cfg_mod.save_qwen_config(cfg)
 
     saved = cfg_mod._read_json_dict(cfg_mod._qwen_config_path())
-    assert "api_key" not in saved
-    assert "account_access_key_id" not in saved
-    assert "account_access_key_secret" not in saved
+    assert saved["api_key"] == "dashscope-key"
+    assert saved["account_access_key_id"] == "akid"
+    assert saved["account_access_key_secret"] == "aksecret"
 
     reloaded = cfg_mod.load_qwen_config()
-    assert reloaded.api_key == ""
+    assert reloaded.api_key == "dashscope-key"
     assert reloaded.number_model == "qwen-max"
-    assert reloaded.account_access_key_id == ""
-    assert reloaded.account_access_key_secret == ""
-    assert reloaded.has_account_balance_credentials() is False
+    assert reloaded.account_access_key_id == "akid"
+    assert reloaded.account_access_key_secret == "aksecret"
+    assert reloaded.has_account_balance_credentials() is True
 
     monkeypatch.setenv("QWEN_API_KEY", "dashscope-env")
     monkeypatch.setenv("QWEN_ACCOUNT_ACCESS_KEY_ID", "akid-env")
     monkeypatch.setenv("QWEN_ACCOUNT_ACCESS_KEY_SECRET", "aksecret-env")
+    monkeypatch.setenv("QWEN_BASE_URL", "https://dashscope.example/v1")
+    monkeypatch.setenv("QWEN_QUESTION_NUMBER_MODEL", "qwen-number-model")
+    monkeypatch.setenv("QWEN_QUESTION_UNIT_MODEL", "qwen-unit-model")
+    monkeypatch.setenv("QWEN_TIMEOUT_S", "88")
     reloaded = cfg_mod.load_qwen_config()
-    assert reloaded.api_key == "dashscope-env"
-    assert reloaded.account_access_key_id == "akid-env"
-    assert reloaded.account_access_key_secret == "aksecret-env"
+    assert reloaded.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert reloaded.api_key == "dashscope-key"
+    assert reloaded.number_model == "qwen-max"
+    assert reloaded.model == "qwen-max"
+    assert reloaded.account_access_key_id == "akid"
+    assert reloaded.account_access_key_secret == "aksecret"
+    assert reloaded.timeout_s == 60.0
     assert reloaded.has_account_balance_credentials() is True
 
 
@@ -707,7 +1066,7 @@ def test_sync_kimi_runtime_env_updates_effective_loaded_config(monkeypatch, tmp_
     assert loaded.timeout_s == 66.0
 
 
-def test_sync_qwen_runtime_env_updates_effective_loaded_config(monkeypatch, tmp_path) -> None:
+def test_sync_qwen_runtime_env_updates_runtime_env_variables(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.delenv("SJ_GENERATOR_QWEN_CONFIG_PATH", raising=False)
     saved_env: dict[str, str] = {}
@@ -748,17 +1107,12 @@ def test_sync_qwen_runtime_env_updates_effective_loaded_config(monkeypatch, tmp_
         )
     )
 
-    loaded = cfg_mod.load_qwen_config()
     assert saved_env["QWEN_QUESTION_NUMBER_MODEL"] == "qwen-number-model"
     assert saved_env["QWEN_QUESTION_UNIT_MODEL"] == "qwen-unit-model"
     assert saved_env["ALIBABA_CLOUD_ACCESS_KEY_ID"] == "akid"
-    assert loaded.base_url == "https://dashscope.example/v1"
-    assert loaded.api_key == "qwen-key"
-    assert loaded.number_model == "qwen-number-model"
-    assert loaded.model == "qwen-unit-model"
-    assert loaded.account_access_key_id == "akid"
-    assert loaded.account_access_key_secret == "aksecret"
-    assert loaded.timeout_s == 77.0
+    assert saved_env["QWEN_BASE_URL"] == "https://dashscope.example/v1"
+    assert saved_env["QWEN_API_KEY"] == "qwen-key"
+    assert saved_env["QWEN_ACCOUNT_ACCESS_KEY_SECRET"] == "aksecret"
 
 
 def test_pick_temperature_uses_kimi_k2_6_family_rule() -> None:
@@ -907,6 +1261,23 @@ def test_build_kimi_balance_url_supports_common_base_url_forms() -> None:
 def test_describe_kimi_balance_payload_supports_direct_balance_field() -> None:
     got = balance_mod._describe_kimi_balance_payload({"balance": "15.5", "currency": "CNY"})
     assert got == "已配置，余额 CNY ¥15.50"
+
+
+def test_describe_deepseek_balance_payload_formats_negative_balance() -> None:
+    got = balance_mod._describe_deepseek_balance_payload(
+        {
+            "is_available": False,
+            "balance_infos": [
+                {
+                    "currency": "CNY",
+                    "total_balance": "-0.09",
+                    "granted_balance": "0",
+                    "topped_up_balance": "-0.09",
+                }
+            ],
+        }
+    )
+    assert got == "已配置，余额 CNY ¥-0.09（赠送 ¥0.00，充值 ¥-0.09）（当前账户不可用）"
 
 
 def test_describe_aliyun_account_balance_payload_supports_available_amount() -> None:
@@ -1153,7 +1524,11 @@ def test_process_source_files_to_folders_supports_controlled_concurrency(monkeyp
     src2.write_text("原始资料二", encoding="utf-8")
 
     monkeypatch.setattr(batch_ai, "read_source_text", lambda path: f"{path.stem} 正文")
-    monkeypatch.setattr(batch_ai, "generate_explanation", lambda client, inp: "解析一")
+    monkeypatch.setattr(
+        batch_ai,
+        "generate_explanation_result",
+        lambda client, inp: explanations_mod.ExplanationResult(answer_text=inp.answer_text, analysis_text="解析一"),
+    )
     monkeypatch.setattr(
         batch_ai,
         "import_questions_from_sources",
@@ -1202,7 +1577,14 @@ def test_process_source_files_to_folders_supports_analysis_concurrency(monkeypat
             raw_items=[],
         ),
     )
-    monkeypatch.setattr(batch_ai, "generate_explanation", lambda client, inp: f"解析-{inp.answer_text}")
+    monkeypatch.setattr(
+        batch_ai,
+        "generate_explanation_result",
+        lambda client, inp: explanations_mod.ExplanationResult(
+            answer_text=inp.answer_text,
+            analysis_text=f"解析-{inp.answer_text}",
+        ),
+    )
 
     created: list[str] = []
 
@@ -1226,6 +1608,26 @@ def test_process_source_files_to_folders_supports_analysis_concurrency(monkeypat
     assert ws.cell(2, 5).value == "解析-A"
     assert ws.cell(3, 5).value == "解析-B"
     assert len(created) == 2
+
+
+def test_generate_explanation_result_fills_answer_when_missing() -> None:
+    class FakeClient:
+        def chat_text(self, *, system: str, user: str) -> str:
+            assert "专业的教育助手" in system
+            assert "题目文本" in user
+            assert "如果“答案文本”为空" in user
+            return "答案：a, c\n- A：**正确** 理由\n- B：**概念错误** 理由"
+
+    result = explanations_mod.generate_explanation_result(
+        FakeClient(),
+        explanations_mod.ExplanationInputs(
+            question_text="题目一\nA.甲\nB.乙\nC.丙\nD.丁",
+            answer_text="",
+        ),
+    )
+
+    assert result.answer_text == "AC"
+    assert result.analysis_text == "A：**正确** 理由\nB：**概念错误** 理由"
 
 
 def test_import_questions_from_sources_supports_question_level_concurrency(monkeypatch, tmp_path) -> None:

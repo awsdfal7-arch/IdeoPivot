@@ -107,6 +107,21 @@ python main.py
 
 更完整的页面流程见 [向导流程](docs/向导流程.md)。
 
+## 架构概览
+
+- 当前项目已采用分层结构：
+  - `app`：应用启动与引导入口
+  - `presentation`：桌面向导与页面装配入口
+  - `application`：导入、查重、设定、状态等用例编排
+  - `domain`：题目等核心领域实体
+  - `infrastructure`：`docx` 读取、LLM 调用、SQLite / xlsx 持久化与导出
+  - `ui`：Qt 页面、对话框、表格渲染、线程与交互适配
+  - `shared`：通用路径与共享工具
+- 当前仓库仍处于分层迁移过程中：主入口已切到 `app -> presentation`，部分页面实现与 Qt 细节仍位于 `ui`。
+- 导入流程本轮已把文档读取、题号解析、题目解析、草稿入库等核心入口收口到 `application/importing`，`ui` 侧主要保留线程、信号、弹窗与状态适配。
+
+详细说明见 [项目架构](docs/项目架构.md)。
+
 ## 当前页面
 
 - 主窗口当前保留 `登录` 与 `开始` 两页；资料导入使用独立导入向导弹窗。
@@ -150,9 +165,13 @@ python main.py
 
 ```text
 sj_generator/
-  ai/         # 大模型调用、AI 导题、AI 解析、并发任务执行
-  io/         # xlsx / sqlite 读写、查重、导出、资料读取
-  ui/         # 向导页、配置对话框、界面状态
+  app/             # 启动引导入口
+  presentation/    # 桌面向导与页面装配入口
+  application/     # 用例编排、设定、状态、导入/导出/查重服务
+  domain/          # 领域实体
+  infrastructure/  # 文档读取、LLM、持久化、导出实现
+  ui/              # Qt 页面、对话框、线程与界面适配
+  shared/          # 通用路径与共享工具
 docs/         # 需求、流程、数据格式说明
 test/         # 回归测试
 main.py       # 应用入口

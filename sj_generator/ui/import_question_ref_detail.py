@@ -149,6 +149,7 @@ def build_question_ref_detail_rows(
         number_order = question_ref_number_order(model_refs)
         type_maps = [question_ref_type_map(refs) for refs in model_refs]
         marker_map = payload.get("markers") if isinstance(payload.get("markers"), dict) else {}
+        elapsed_map = payload.get("elapsed_s_by_model") if isinstance(payload.get("elapsed_s_by_model"), dict) else {}
         marker_values = [
             special_marker_text(marker_map.get(str(spec.get("key") or "")))
             for spec in model_specs
@@ -177,10 +178,17 @@ def build_question_ref_detail_rows(
         for number in number_order:
             row_values = [source_name]
             for model_index, refs in enumerate(model_refs):
+                model_key = str(model_specs[model_index].get("key") or "")
                 type_map = type_maps[model_index]
                 row_values.append(number if number in type_map else "")
-                row_values.append(type_map.get(number, ""))
+                question_type = type_map.get(number, "")
+                elapsed_s = str(elapsed_map.get(model_key) or "").strip()
+                type_text = question_type
+                if elapsed_s:
+                    type_text = f"{question_type}\n{elapsed_s}s" if question_type else f"{elapsed_s}s"
+                row_values.append(type_text)
             types = [type_map.get(number, "").strip() for type_map in type_maps]
+            suggested_type = question_type_from_candidates(types) if types else ""
             manual_type = str(
                 resolve_manual_type(
                     source_key=source_key,
@@ -198,6 +206,7 @@ def build_question_ref_detail_rows(
                     "source_key": source_key,
                     "number": number,
                     "manual_type": manual_type,
+                    "suggested_type": suggested_type,
                 }
             )
     return rows
@@ -253,15 +262,22 @@ def populate_question_ref_detail_table(
             item = QTableWidgetItem(str(value or ""))
             if col_index == 0:
                 item.setData(Qt.ItemDataRole.UserRole, source_key)
+                item.setData(Qt.ItemDataRole.UserRole + 1, number)
             if background is not None:
                 item.setBackground(background)
             table.setItem(row_index, col_index, item)
         manual_type = str(row_data.get("manual_type") or "") if isinstance(row_data, dict) else ""
+        suggested_type = str(row_data.get("suggested_type") or "") if isinstance(row_data, dict) else ""
         if source_key and number and ("不一致" in verdict_text):
             table.setCellWidget(
                 row_index,
                 manual_col,
-                build_combo(source_key=source_key, number=number, current_type=manual_type, background=background),
+                build_combo(
+                    source_key=source_key,
+                    number=number,
+                    current_type=manual_type or suggested_type,
+                    background=background,
+                ),
             )
         else:
             manual_item = QTableWidgetItem(manual_type)

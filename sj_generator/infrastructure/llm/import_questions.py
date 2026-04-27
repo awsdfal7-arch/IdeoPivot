@@ -1197,17 +1197,22 @@ def _safe_get_question_by_number_with_fallback(
     requested_question_type: str,
     depth: int,
 ) -> dict[str, Any]:
-    try:
-        return _get_question_by_number_with_fallback(
-            client=client,
-            source_name=source_name,
-            chunk_text=chunk_text,
-            requested_number=requested_number,
-            requested_question_type=requested_question_type,
-            depth=depth,
-        )
-    except Exception:
-        return {}
+    max_attempts = 2
+    for _attempt in range(max_attempts):
+        try:
+            obj = _get_question_by_number_with_fallback(
+                client=client,
+                source_name=source_name,
+                chunk_text=chunk_text,
+                requested_number=requested_number,
+                requested_question_type=requested_question_type,
+                depth=depth,
+            )
+        except Exception:
+            obj = {}
+        if obj:
+            return obj
+    return {}
 
 
 def _to_question(obj: dict[str, Any]) -> Question:

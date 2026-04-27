@@ -1,5 +1,7 @@
-from sj_generator.ui.pages.import_flow.select_page import AiSelectFilesPage
-from sj_generator.ui.pages.import_flow.question_ref_page import AiImportPage
-from sj_generator.ui.pages.import_flow.content_page import AiImportContentPage
+from sj_generator.presentation.qt.pages.import_flow import (
+    AiImportContentPage,
+    AiImportPage,
+    AiSelectFilesPage,
+)
 
-__all__ = ['AiSelectFilesPage', 'AiImportPage', 'AiImportContentPage']
+__all__ = ["AiSelectFilesPage", "AiImportPage", "AiImportContentPage"]

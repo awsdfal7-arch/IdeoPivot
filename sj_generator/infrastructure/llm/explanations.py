@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sj_generator.infrastructure.llm.client import LlmClient
+from sj_generator.infrastructure.llm.prompt_templates import render_import_prompt
 from sj_generator.shared.paths import common_mistakes_md_path
 
 
@@ -17,10 +19,20 @@ class ExplanationInputs:
     root_dir: Path | None = None
 
 
+@dataclass(frozen=True)
+class ExplanationResult:
+    answer_text: str
+    analysis_text: str
+
+
 _NONEMPTY_LINE_RE = re.compile(r".*\S.*")
 
 
 def generate_explanation(client: LlmClient, inp: ExplanationInputs) -> str:
+    return generate_explanation_result(client, inp).analysis_text
+
+
+def generate_explanation_result(client: LlmClient, inp: ExplanationInputs) -> ExplanationResult:
     reference_text = ""
     if inp.reference_md_paths:
         reference_text = _read_reference_md_text(inp.reference_md_paths)
@@ -31,20 +43,20 @@ def generate_explanation(client: LlmClient, inp: ExplanationInputs) -> str:
         if md.exists():
             mistakes_text = _read_text_limited(md, max_chars=12000)
 
-    system = (
-        "你是一个专业的教育助手，擅长讲解选择题。请严格遵循用户的格式要求。"
-    )
-
+    system = render_import_prompt("explanation_system")
+    answer_text = (inp.answer_text or "").strip()
     user = _build_user_prompt(
         question_text=inp.question_text,
-        answer_text=inp.answer_text,
+        answer_text=answer_text,
         reference_md_paths=inp.reference_md_paths,
         reference_text=reference_text,
         mistakes_text=mistakes_text,
     )
-
     raw = client.chat_text(system=system, user=user)
-    return postprocess_explanation(raw)
+    parsed_answer, analysis_body = _extract_answer_and_analysis(raw)
+    final_answer = answer_text or _normalize_generated_answer_text(parsed_answer)
+    final_analysis = postprocess_explanation(analysis_body or raw)
+    return ExplanationResult(answer_text=final_answer, analysis_text=final_analysis)
 
 
 def _build_user_prompt(
@@ -55,50 +67,40 @@ def _build_user_prompt(
     reference_text: str,
     mistakes_text: str,
 ) -> str:
-    parts: list[str] = []
-
-    parts.append("请严格按照以下格式输出解析：")
-    parts.append("每行分析一个选项。")
-    parts.append("必须沿用题目中出现的选项标识（例如 A/B/C/D 或 ①/②/③/④），不要擅自改成另一种编号方式。")
-    parts.append("如果是错误选项：必须先指出“具体的错误原因类型”（可以多个，用中文分号“；”分隔），然后再做详细分析。")
-    parts.append("如果是正确选项：必须标记为“正确”，并说明理由。")
-    parts.append("同一选项允许多个错误原因，需要一并列出。")
-    parts.append("")
-    parts.append("示例格式：")
-    parts.append("- A：**知识模块归类错误** ...")
-    parts.append("- B：**正确** ...")
-    parts.append("- C：**偷换概念；范围扩大** ...")
-    parts.append("或：")
-    parts.append("- ①：**知识模块归类错误** ...")
-    parts.append("- ②：**正确** ...")
-    parts.append("- ③：**偷换概念；范围扩大** ...")
-    parts.append("")
-
-    parts.append("题目文本：")
-    parts.append(question_text.strip())
-    parts.append("")
-    parts.append("答案文本：")
-    parts.append(answer_text.strip())
-
+    reference_block = ""
     if reference_text.strip():
-        parts.append("")
         if reference_md_paths:
             names = "、".join([p.name for p in reference_md_paths])
-            parts.append(f"参考资料（{len(reference_md_paths)} 份：{names}）：")
+            title = f"参考资料（{len(reference_md_paths)} 份：{names}）："
         else:
-            parts.append("参考资料：")
-        parts.append(reference_text.strip())
+            title = "参考资料："
+        reference_block = f"\n\n{title}\n{reference_text.strip()}"
 
+    mistakes_block = ""
     if mistakes_text.strip():
-        parts.append("")
-        parts.append("常见错题归因与答题策略参考（md 原文）：")
-        parts.append(mistakes_text.strip())
+        mistakes_block = (
+            "\n\n常见错题归因与答题策略参考（md 原文）：\n"
+            f"{mistakes_text.strip()}"
+        )
 
-    return "\n".join(parts).strip()
+    prompt = render_import_prompt(
+        "explanation_user",
+        question_text=question_text.strip(),
+        answer_text=answer_text.strip(),
+        reference_block=reference_block,
+        mistakes_block=mistakes_block,
+    ).strip()
+    if answer_text.strip():
+        return prompt
+    return (
+        prompt
+        + "\n\n补充要求：当前“答案文本”为空。请你先判断最可能的正确答案，"
+        + "并在第一行单独输出“答案：答案标识”；从第二行开始再输出逐项解析。"
+    ).strip()
 
 
 def _read_reference_md_text(paths: list[Path]) -> str:
-    max_chars = 30000
+    max_chars = 100000
     blocks: list[str] = []
     used = 0
     for p in paths:
@@ -136,6 +138,43 @@ def postprocess_explanation(text: str) -> str:
             s = s[1:].lstrip()
         cleaned.append(s)
     return "\n".join(cleaned).strip()
+
+
+def _extract_answer_and_analysis(text: str) -> tuple[str, str]:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    first_nonempty_index = -1
+    for idx, line in enumerate(lines):
+        if line.strip():
+            first_nonempty_index = idx
+            break
+    if first_nonempty_index < 0:
+        return "", ""
+    first_line = lines[first_nonempty_index].strip()
+    first_line = re.sub(r"^[\-\*\d\.\)\s]+", "", first_line)
+    first_line = first_line.replace("**", "").strip()
+    match = re.match(r"^(?:答案|参考答案|正确答案)\s*[：:]?\s*(.+?)\s*$", first_line)
+    if not match:
+        return "", text
+    answer_text = _normalize_generated_answer_text(match.group(1))
+    remaining = lines[:first_nonempty_index] + lines[first_nonempty_index + 1 :]
+    return answer_text, "\n".join(remaining).strip()
+
+
+def _as_str(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _normalize_generated_answer_text(text: str) -> str:
+    raw = _as_str(text).upper()
+    if not raw:
+        return ""
+    for old, new in (("，", ","), ("；", ","), (";", ","), ("、", ","), ("/", ","), (" ", "")):
+        raw = raw.replace(old, new)
+    if "," in raw:
+        raw = "".join(part.strip() for part in raw.split(",") if part.strip())
+    return raw
 
 def _read_common_mistakes_md(path: Path) -> list[tuple[str, str]]:
     text = path.read_text(encoding="utf-8", errors="ignore")

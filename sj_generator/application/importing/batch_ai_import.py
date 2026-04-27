@@ -8,7 +8,7 @@ import re
 from typing import Callable
 
 from sj_generator.infrastructure.llm.client import LlmClient
-from sj_generator.infrastructure.llm.explanations import ExplanationInputs, generate_explanation
+from sj_generator.infrastructure.llm.explanations import ExplanationInputs, generate_explanation_result
 from sj_generator.infrastructure.llm.import_questions import import_questions_from_sources
 from sj_generator.infrastructure.persistence.excel_repo import save_questions
 from sj_generator.infrastructure.exporting.export_md import export_questions_to_markdown
@@ -292,7 +292,7 @@ def _fill_missing_explanations(
     worker_count = max(1, int(max_analysis_workers))
     if worker_count <= 1:
         for current, (row, q) in enumerate(tasks, start=1):
-            analysis = _generate_one_explanation(
+            result = _generate_one_explanation(
                 client=client,
                 question=q,
                 reference_md_paths=reference_md_paths,
@@ -303,8 +303,8 @@ def _fill_missing_explanations(
                 number=q.number,
                 stem=q.stem,
                 options=q.options,
-                answer=q.answer,
-                analysis=analysis,
+                answer=result.answer_text or q.answer,
+                analysis=result.analysis_text,
                 question_type=q.question_type,
                 choice_1=q.choice_1,
                 choice_2=q.choice_2,
@@ -355,13 +355,13 @@ def _fill_missing_explanations(
         }
         for future in as_completed(future_map):
             row, q = future_map[future]
-            analysis = future.result()
+            result = future.result()
             updated[row] = Question(
                 number=q.number,
                 stem=q.stem,
                 options=q.options,
-                answer=q.answer,
-                analysis=analysis,
+                answer=result.answer_text or q.answer,
+                analysis=result.analysis_text,
                 question_type=q.question_type,
                 choice_1=q.choice_1,
                 choice_2=q.choice_2,
@@ -399,7 +399,7 @@ def _generate_one_explanation(
         include_common_mistakes=include_common_mistakes,
         root_dir=root_dir,
     )
-    return generate_explanation(client, inp)
+    return generate_explanation_result(client, inp)
 
 
 def _question_text_for_explanation(q: Question) -> str:

@@ -7,7 +7,7 @@ from PyQt6.QtCore import QRegularExpression
 from PyQt6.QtGui import QDropEvent, QRegularExpressionValidator
 from PyQt6.QtWidgets import QLineEdit, QProgressBar, QPushButton, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from sj_generator.application.state import WizardState
+from sj_generator.application.state import ImportWizardSession
 
 BUTTON_MIN_WIDTH = 96
 BUTTON_MIN_HEIGHT = 36
@@ -65,7 +65,7 @@ def unique_child_dir(parent: Path, base_name: str) -> Path:
         index += 1
 
 
-def rename_project(state: WizardState, *, new_name: str) -> bool:
+def rename_project(state: ImportWizardSession, *, new_name: str) -> bool:
     project_dir = state.project_dir
     repo_path = state.repo_path
     if project_dir is None or repo_path is None:

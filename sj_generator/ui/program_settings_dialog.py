@@ -33,7 +33,6 @@ from sj_generator.application.state import (
     desktop_import_source_dir,
 )
 from sj_generator.infrastructure.persistence.sqlite_repo import load_all_questions
-
 SECTION_GENERAL = "general"
 SECTION_IMPORT = "import"
 SECTION_EXPORT = "export"
@@ -196,8 +195,6 @@ class ProgramSettingsDialog(QDialog):
             self._state.analysis_enabled = bool(self._import_analysis_combo.currentData())
             self._state.dedupe_enabled = self._dedupe_checkbox.isChecked()
             self._state.import_show_costs = self._import_show_costs_checkbox.isChecked()
-            if not self._state.dedupe_enabled:
-                self._state.dedupe_hits = None
         else:
             self._state.export_convertible_multi_mode = normalize_export_convertible_multi_mode(
                 self._convertible_multi_export_combo.currentData()
