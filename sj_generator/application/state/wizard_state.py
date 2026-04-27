@@ -230,6 +230,7 @@ class WizardState:
     import_source_dir_text: str = field(default_factory=lambda: str(default_import_source_dir()))
     analysis_enabled: bool = True
     analysis_use_reference_folder: bool = True
+    analysis_use_reference_md: bool = False
     analysis_reference_md_path_text: str = ""
     analysis_include_common_mistakes: bool = True
     analysis_provider: str = "deepseek"
