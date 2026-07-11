@@ -11,6 +11,13 @@ from sj_generator.infrastructure.persistence.excel_repo import save_db_question_
 from sj_generator.infrastructure.persistence.sqlite_repo import DbQuestionRecord
 
 
+_LEADING_DOT_RE = re.compile(r"^\.\s*")
+
+
+def _strip_leading_dot(text: str) -> str:
+    return _LEADING_DOT_RE.sub("", text.strip())
+
+
 def sanitize_export_name(name: str) -> str:
     cleaned = re.sub(r'[<>:"/\\\\|?*]+', "_", (name or "").strip())
     cleaned = cleaned.strip(" .")
@@ -47,7 +54,7 @@ def format_db_options(record: DbQuestionRecord) -> str:
     options = [record.option_1, record.option_2, record.option_3, record.option_4]
     if record.question_type == "可转多选":
         lines = [
-            f"{marker}. {text.strip()}".rstrip()
+            f"{marker}. {_strip_leading_dot(text)}".rstrip()
             for marker, text in zip(["①", "②", "③", "④"], options)
             if text.strip()
         ]
@@ -70,7 +77,7 @@ def format_db_options(record: DbQuestionRecord) -> str:
     else:
         markers = ["A", "B", "C", "D"]
     lines = [
-        f"{markers[idx - 1]}. {text.strip()}".rstrip()
+        f"{markers[idx - 1]}. {_strip_leading_dot(text)}".rstrip()
         for idx, text in enumerate(options, start=1)
         if text.strip()
     ]

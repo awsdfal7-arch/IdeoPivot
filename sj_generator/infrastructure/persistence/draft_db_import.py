@@ -14,7 +14,7 @@ from sj_generator.domain.entities import Question
 LETTER_MARKER_RE = re.compile(r"(?<!\n)(?=(?:[A-D][\.、．]))")
 CIRCLED_MARKER_RE = re.compile(r"(?<!\n)(?=(?:[\u2460-\u2473]))")
 LETTER_LINE_RE = re.compile(r"^([A-D])[\.\u3001\uFF0E]\s*(.*)$")
-CIRCLED_LINE_RE = re.compile(r"^([\u2460-\u2473])\s*(.*)$")
+CIRCLED_LINE_RE = re.compile(r"^([\u2460-\u2473])[\.\u3001\uFF0E]?\s*(.*)$")
 COMBO_RE = re.compile(r"([A-D])[\.\u3001\uFF0E]\s*([\u2460-\u2473\s]+)")
 LETTER_ONLY_RE = re.compile(r"^[A-D]+$")
 DIGIT_TOKEN_RE = re.compile(r"\d+")

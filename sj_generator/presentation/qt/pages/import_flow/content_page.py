@@ -1,4 +1,7 @@
-from PyQt6.QtCore import QThread, QTimer, Qt
+import time
+
+from PyQt6.QtCore import QEvent, QThread, QTimer, Qt
+from PyQt6.QtGui import QHideEvent, QPaintEvent, QResizeEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
@@ -45,6 +48,11 @@ from .content_support import (
 )
 from sj_generator.presentation.qt.table_copy import CopyableTableWidget
 
+CONTENT_START_DELAY_MS = 600
+CONTENT_UI_FLUSH_MS = 120
+CONTENT_COMPARE_BATCH_SIZE = 6
+CONTENT_DIAG_WINDOW_MS = 5000
+
 
 class AiImportContentPage(QWizardPage):
     _DETAIL_TABLE_FONT_POINT_SIZE_MIN = 8
@@ -79,7 +87,8 @@ class AiImportContentPage(QWizardPage):
         self._detail_table.setColumnCount(len(question_content_detail_headers()))
         self._detail_table.setHorizontalHeaderLabels(question_content_detail_headers())
         self._detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self._detail_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._detail_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self._detail_table.verticalHeader().setDefaultSectionSize(72)
         self._detail_table.setWordWrap(True)
         self._detail_table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self._detail_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -133,8 +142,33 @@ class AiImportContentPage(QWizardPage):
         self._waiting_detail_timer.setInterval(1000)
         self._waiting_detail_timer.timeout.connect(self._refresh_waiting_placeholder_rows)
         self._waiting_elapsed_s = 0
+        self._pending_compare_payloads: list[dict[str, object]] = []
+        self._status_refresh_pending = False
+        self._button_sync_pending = False
+        self._complete_emit_pending = False
+        self._diag_started_at = time.perf_counter()
+        self._last_progress_log_current = -1
+        self._last_progress_log_total = -1
+        self._ui_diag_window_active = False
+        self._ui_diag_window_reason = ""
+        self._ui_diag_window_counts: dict[str, int] = {}
+        self._ui_diag_total_counts: dict[str, int] = {}
+        self._control_event_counts: dict[str, dict[str, int]] = {}
+        self._flush_update_stats: dict[str, int] = {}
+        self._ui_diag_summary_timer = QTimer(self)
+        self._ui_diag_summary_timer.setSingleShot(True)
+        self._ui_diag_summary_timer.setInterval(CONTENT_DIAG_WINDOW_MS)
+        self._ui_diag_summary_timer.timeout.connect(self._emit_ui_diag_summary)
+        self._ui_flush_timer = QTimer(self)
+        self._ui_flush_timer.setSingleShot(True)
+        self._ui_flush_timer.setInterval(CONTENT_UI_FLUSH_MS)
+        self._ui_flush_timer.timeout.connect(self._flush_pending_ui_updates)
+        self._install_control_diag_filters()
+        self.destroyed.connect(lambda *_args: self._diag("page_destroyed"))
+        self._diag("page_created", flush_ms=CONTENT_UI_FLUSH_MS, compare_batch=CONTENT_COMPARE_BATCH_SIZE)
 
     def initializePage(self) -> None:
+        self._start_ui_diag_window("initialize_page")
         self._sync_wizard_buttons()
         if self._state.source.files:
             self._cur_source_name = self._state.source.files[0].name
@@ -142,7 +176,9 @@ class AiImportContentPage(QWizardPage):
         content_model_specs = question_content_active_model_specs()
         content_model_signature = question_content_model_signature(content_model_specs)
         self._content_model_specs = content_model_specs
+        self._record_flush_update("set_column_count")
         self._detail_table.setColumnCount(len(question_content_detail_headers(self._content_model_specs)))
+        self._record_flush_update("set_header_labels")
         self._detail_table.setHorizontalHeaderLabels(question_content_detail_headers(self._content_model_specs))
         self._apply_content_detail_column_widths_if_needed(model_specs=self._content_model_specs)
         should_restart = (
@@ -161,6 +197,14 @@ class AiImportContentPage(QWizardPage):
             and (self._thread is None or not self._thread.isRunning())
         )
         if should_restart or should_auto_start:
+            self._diag(
+                "initialize_page",
+                files=len(self._state.source.files or []),
+                refs=question_ref_total_count(self._state.refs.question_refs_by_source),
+                restart=should_restart,
+                auto_start=should_auto_start,
+                models=len(self._content_model_specs),
+            )
             self._last_files_text = self._state.source.files_text
             self._last_ref_version = ref_version
             self._last_content_model_signature = content_model_signature
@@ -180,7 +224,58 @@ class AiImportContentPage(QWizardPage):
             self._failed = False
             self._render_status()
             self.completeChanged.emit()
-            QTimer.singleShot(30, self._start_import)
+            self._diag("schedule_start_import", delay_ms=CONTENT_START_DELAY_MS)
+            QTimer.singleShot(CONTENT_START_DELAY_MS, self._start_import)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        self._diag_ui_event(
+            "show",
+            visible=self.isVisible(),
+            size=f"{self.width()}x{self.height()}",
+            spontaneous=event.spontaneous(),
+        )
+        super().showEvent(event)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self._diag_ui_event(
+            "hide",
+            visible=self.isVisible(),
+            size=f"{self.width()}x{self.height()}",
+            spontaneous=event.spontaneous(),
+        )
+        super().hideEvent(event)
+
+    def event(self, event: QEvent) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.Type.WindowActivate:
+            self._diag_ui_event("window_activate", visible=self.isVisible())
+        elif event_type == QEvent.Type.WindowDeactivate:
+            self._diag_ui_event("window_deactivate", visible=self.isVisible())
+        elif event_type == QEvent.Type.FocusIn:
+            self._diag_ui_event("focus_in", visible=self.isVisible())
+        elif event_type == QEvent.Type.FocusOut:
+            self._diag_ui_event("focus_out", visible=self.isVisible())
+        return super().event(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        old_size = event.oldSize()
+        new_size = event.size()
+        self._diag_ui_event(
+            "resize",
+            old=f"{max(0, old_size.width())}x{max(0, old_size.height())}",
+            new=f"{new_size.width()}x{new_size.height()}",
+        )
+        super().resizeEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        rect = event.rect()
+        self._diag_ui_event(
+            "paint",
+            rect=f"{rect.x()},{rect.y()},{rect.width()}x{rect.height()}",
+            running=getattr(self, "_running", False),
+            pending=len(getattr(self, "_pending_compare_payloads", [])),
+        )
+        super().paintEvent(event)
 
     def nextId(self) -> int:
         if self._state.dedupe_enabled:
@@ -273,13 +368,16 @@ class AiImportContentPage(QWizardPage):
 
     def _start_import(self) -> None:
         if self._thread is not None and self._thread.isRunning():
+            self._diag("start_import_skipped", reason="thread_running")
             return
 
         paths = self._state.source.files or []
         if not paths:
+            self._diag("start_import_blocked", reason="no_paths")
             show_message_box(self, title="未选择文件", text="请先选择待处理的资料文件。", icon=QMessageBox.Icon.Warning)
             return
         if question_ref_total_count(self._state.refs.question_refs_by_source) <= 0:
+            self._diag("start_import_blocked", reason="no_question_refs")
             show_message_box(self, title="缺少题号", text="请先完成题号与题型解析。", icon=QMessageBox.Icon.Warning)
             return
 
@@ -290,10 +388,21 @@ class AiImportContentPage(QWizardPage):
         }
         self._content_model_ready = ready_map
         self._render_status()
+        self._diag(
+            "start_import_begin",
+            files=len(paths),
+            refs=question_ref_total_count(self._state.refs.question_refs_by_source),
+            models=len(self._content_model_specs),
+            concurrency=effective_content_question_workers(
+                normalize_ai_concurrency(self._state.question_content_concurrency),
+                len(self._content_model_specs),
+            ),
+        )
         if not self._content_model_specs or not all(ready_map.values()):
             self._sync_wizard_buttons()
             missing_labels = missing_content_model_labels(self._content_model_specs, ready_map)
             missing_text = "、".join(label for label in missing_labels if label) or "题目内容解析模型"
+            self._diag("start_import_blocked", reason="provider_not_ready", missing=missing_text)
             show_message_box(
                 self,
                 title="未配置",
@@ -304,7 +413,7 @@ class AiImportContentPage(QWizardPage):
 
         self._status_label.setText("正在解析题目内容，请稍候…")
         self._reset_progress_meta()
-        self._phase_text = "正在解析题目内容，请稍候…"
+        self._phase_text = "正在准备解析环境，请稍候…"
         self._show_waiting_placeholder_rows()
         self._render_status()
         self._stop_btn.setEnabled(True)
@@ -340,46 +449,79 @@ class AiImportContentPage(QWizardPage):
         )
         self._thread = bundle.thread
         self._worker = bundle.worker
+        self._thread.started.connect(lambda: self._diag("thread_started", running=self._thread is not None and self._thread.isRunning()))
+        self._thread.finished.connect(lambda: self._diag("thread_finished"))
         self._thread.start()
+        self._diag("worker_started", queue_rows=self._detail_table.rowCount())
 
     def _on_progress(self, msg: str) -> None:
         if self._discard_run_results:
             return
         self._phase_text = msg
         self._update_detail_from_progress(msg)
-        self._render_status()
+        self._request_status_refresh()
 
     def _on_progress_count(self, current: int, total: int) -> None:
         if self._discard_run_results:
             return
         self._progress_cur = max(0, current)
         self._progress_total = max(0, total)
+        should_log = (
+            total != self._last_progress_log_total
+            or current in (0, 1, total)
+            or (current > 0 and current % 5 == 0 and current != self._last_progress_log_current)
+        )
+        if should_log:
+            self._diag("progress_count", current=current, total=total)
+            self._count_ui_diag_event("progress_count")
+            self._last_progress_log_current = current
+            self._last_progress_log_total = total
         if total <= 0:
             self._progress.setRange(0, 0)
             self._progress.setFormat("正在统计题数…")
-            self._render_status()
+            self._request_status_refresh()
             return
         if self._progress.maximum() != total:
+            self._diag("progress_range_update", maximum=total)
             self._progress.setRange(0, total)
+        self._diag("progress_value_update", current=max(0, min(current, total)), total=total)
         self._progress.setValue(max(0, min(current, total)))
         self._progress.setFormat("选择题 %v/%m题")
-        self._render_status()
-        self._sync_wizard_buttons()
+        self._request_status_refresh()
+        self._request_button_sync()
 
     def _on_question(self, question: Question) -> None:
         if self._discard_run_results:
             return
         self._items.append(question)
         self._accepted_count = len(self._items)
-        self._render_status()
-        self._sync_wizard_buttons()
-        self.completeChanged.emit()
+        self._count_ui_diag_event("question_accepted")
+        self._diag(
+            "question_accepted",
+            count=self._accepted_count,
+            number=(question.number or "").strip() or "?",
+            type=(question.question_type or "").strip() or "?",
+        )
+        self._request_status_refresh()
+        self._request_button_sync()
+        self._request_complete_changed()
 
     def _on_compare(self, payload: object) -> None:
         if self._discard_run_results:
             return
         if not isinstance(payload, dict):
             return
+        self._pending_compare_payloads.append(dict(payload))
+        self._count_ui_diag_event("compare_payload_queued")
+        pending_count = len(self._pending_compare_payloads)
+        if pending_count == 1 or pending_count % 10 == 0:
+            self._diag("compare_payload_queued", pending=pending_count)
+        self._request_status_refresh()
+        self._request_button_sync()
+        self._schedule_ui_flush()
+
+    def _apply_compare_update(self, payload: dict[str, object]) -> None:
+        self._record_flush_update("compare_apply")
         update = apply_content_compare_payload(
             table=self._detail_table,
             payload=payload,
@@ -400,10 +542,10 @@ class AiImportContentPage(QWizardPage):
         self._cur_round_no = update.round_no
         self._cache_accepted_question(payload)
         self._phase_text = f"解析中：已回传第 {update.index} 题第 {update.round_no}/{update.round_limit} 轮比对结果"
-        self._render_status()
-        self._sync_wizard_buttons()
 
     def _schedule_detail_row_resize(self) -> None:
+        if getattr(self, "_running", False):
+            return
         if getattr(self, "_detail_row_resize_pending", False):
             return
         self._detail_row_resize_pending = True
@@ -433,6 +575,67 @@ class AiImportContentPage(QWizardPage):
         self._detail_table.horizontalHeader().viewport().update()
         self._schedule_detail_row_resize()
 
+    def _request_status_refresh(self) -> None:
+        self._status_refresh_pending = True
+        self._schedule_ui_flush()
+
+    def _request_button_sync(self) -> None:
+        self._button_sync_pending = True
+        self._schedule_ui_flush()
+
+    def _request_complete_changed(self) -> None:
+        self._complete_emit_pending = True
+        self._schedule_ui_flush()
+
+    def _schedule_ui_flush(self) -> None:
+        if self._ui_flush_timer.isActive():
+            return
+        self._ui_flush_timer.start()
+        self._count_ui_diag_event("ui_flush_scheduled")
+        self._diag("ui_flush_scheduled", delay_ms=CONTENT_UI_FLUSH_MS, pending=len(self._pending_compare_payloads))
+
+    def _flush_pending_ui_updates(self, *, force_all: bool = False) -> None:
+        if self._ui_flush_timer.isActive():
+            self._ui_flush_timer.stop()
+        pending_before = len(self._pending_compare_payloads)
+        batch_size = len(self._pending_compare_payloads) if force_all else CONTENT_COMPARE_BATCH_SIZE
+        while self._pending_compare_payloads and batch_size > 0:
+            payload = self._pending_compare_payloads.pop(0)
+            self._reset_flush_update_stats()
+            compare_started_at = time.perf_counter()
+            self._apply_compare_update(payload)
+            self._diag(
+                "compare_apply_detail",
+                index=int(payload.get("index") or 0),
+                round=payload.get("round"),
+                elapsed_ms=int(round((time.perf_counter() - compare_started_at) * 1000)),
+                updates=self._format_flush_update_stats(),
+            )
+            batch_size -= 1
+        if self._status_refresh_pending:
+            self._status_refresh_pending = False
+            self._diag(
+                "status_label_update",
+                text=self._status_label.text().replace("\n", " | ")[:200],
+            )
+            self._render_status()
+        if self._button_sync_pending:
+            self._button_sync_pending = False
+            self._sync_wizard_buttons()
+        if self._complete_emit_pending:
+            self._complete_emit_pending = False
+            self.completeChanged.emit()
+        if pending_before > 0 or force_all:
+            self._count_ui_diag_event("ui_flush_applied")
+            self._diag(
+                "ui_flush_applied",
+                force_all=force_all,
+                applied=pending_before - len(self._pending_compare_payloads),
+                remaining=len(self._pending_compare_payloads),
+            )
+        if self._pending_compare_payloads:
+            self._schedule_ui_flush()
+
     def _adjust_detail_table_font_size(self, step: int) -> None:
         new_size = max(
             self._DETAIL_TABLE_FONT_POINT_SIZE_MIN,
@@ -444,13 +647,22 @@ class AiImportContentPage(QWizardPage):
         self._apply_detail_table_font_size()
 
     def _apply_content_detail_column_widths_if_needed(self, *, model_specs: list[dict[str, str]]) -> None:
+        previous_signature = self._detail_width_signature
         self._detail_width_signature = apply_content_detail_column_widths_if_needed(
             table=self._detail_table,
             model_specs=model_specs,
             current_signature=self._detail_width_signature,
         )
+        if self._detail_width_signature != previous_signature:
+            self._record_flush_update("set_column_widths")
+            self._diag(
+                "column_widths_updated",
+                signature=self._detail_width_signature,
+                columns=self._detail_table.columnCount(),
+            )
 
     def _apply_content_detail_column_widths(self, model_specs: list[dict[str, str]]) -> None:
+        self._record_flush_update("set_column_widths")
         self._detail_width_signature = apply_content_detail_column_widths_if_needed(
             table=self._detail_table,
             model_specs=model_specs,
@@ -458,10 +670,15 @@ class AiImportContentPage(QWizardPage):
         )
 
     def _set_content_detail_item(self, row: int, col: int, text: str, *, is_json: bool = False) -> None:
+        self._record_flush_update("set_item")
+        if is_json:
+            self._record_flush_update("set_json_item")
         set_content_detail_item(self._detail_table, row, col, text, is_json=is_json)
 
     def _on_done(self, total: int) -> None:
         self._waiting_detail_timer.stop()
+        self._flush_pending_ui_updates(force_all=True)
+        self._diag("worker_done", total=total, accepted=len(self._items), cached=len(self._accepted_items_by_index))
         if self._discard_run_results:
             if self._force_finish_detached:
                 self._thread = None
@@ -502,12 +719,15 @@ class AiImportContentPage(QWizardPage):
         self._finished = True
         self._thread = None
         self._worker = None
+        self._schedule_detail_row_resize()
         self._render_status()
         self._sync_wizard_buttons()
         self.completeChanged.emit()
 
     def _on_error(self, msg: str) -> None:
         self._waiting_detail_timer.stop()
+        self._flush_pending_ui_updates(force_all=True)
+        self._diag("worker_error", message=msg)
         if self._discard_run_results:
             if self._force_finish_detached:
                 self._thread = None
@@ -545,6 +765,7 @@ class AiImportContentPage(QWizardPage):
         self._failed = True
         self._thread = None
         self._worker = None
+        self._schedule_detail_row_resize()
         self._render_status()
         self._sync_wizard_buttons()
         self.completeChanged.emit()
@@ -563,6 +784,7 @@ class AiImportContentPage(QWizardPage):
 
     def _stop(self) -> None:
         if self._worker is not None:
+            self._diag("stop_requested", thread_running=self._thread is not None and self._thread.isRunning())
             self._worker.request_stop()
             self._discard_run_results = True
             self._stop_requested = True
@@ -572,7 +794,7 @@ class AiImportContentPage(QWizardPage):
             self._running = False
             self._phase_text = "正在停止…可点击重试，收尾完成后将重新解析。"
             self._stopped = True
-            self._clear_partial_results()
+            self._clear_partial_results(reason="stop")
             self._render_status()
             self._sync_wizard_buttons()
             self.completeChanged.emit()
@@ -580,7 +802,9 @@ class AiImportContentPage(QWizardPage):
     def prepare_to_close(self) -> bool:
         thread = self._thread
         if thread is None or (not thread.isRunning()):
+            self._diag("prepare_to_close", can_close=True, thread_running=False)
             return True
+        self._diag("prepare_to_close", can_close=False, thread_running=True)
         if self._worker is not None:
             self._worker.request_stop()
         self._discard_run_results = True
@@ -592,7 +816,7 @@ class AiImportContentPage(QWizardPage):
         self._running = False
         self._phase_text = "正在停止，收尾完成后将自动退出…"
         self._stopped = True
-        self._clear_partial_results()
+        self._clear_partial_results(reason="prepare_to_close")
         self._render_status()
         self._sync_wizard_buttons()
         self.completeChanged.emit()
@@ -615,7 +839,8 @@ class AiImportContentPage(QWizardPage):
         self._force_finish_requested = False
         self._force_finish_detached = False
         self._force_finish_advance_attempts = 0
-        self._clear_partial_results()
+        self._diag("retry_requested", thread_running=self._thread is not None and self._thread.isRunning())
+        self._clear_partial_results(reason="retry")
         self._phase_text = "准备重试解析…"
         self._stopped = False
         self._finished = False
@@ -626,9 +851,14 @@ class AiImportContentPage(QWizardPage):
         self.completeChanged.emit()
         QTimer.singleShot(0, self._start_import)
 
-    def _clear_partial_results(self) -> None:
+    def _clear_partial_results(self, *, reason: str = "") -> None:
         self._waiting_detail_timer.stop()
+        self._ui_flush_timer.stop()
         self._waiting_elapsed_s = 0
+        self._pending_compare_payloads = []
+        self._status_refresh_pending = False
+        self._button_sync_pending = False
+        self._complete_emit_pending = False
         self._detail_table.setRowCount(0)
         self._detail_row_map = {}
         self._compare_secs = {}
@@ -638,28 +868,26 @@ class AiImportContentPage(QWizardPage):
         self._progress.setValue(0)
         self._progress.setFormat("正在统计题数…")
         self._reset_progress_meta()
+        self._diag(
+            "partial_results_cleared",
+            reason=reason or "-",
+            thread_running=self._thread is not None and self._thread.isRunning(),
+            close_after_stop=self._close_after_stop_requested,
+            retry_pending=self._retry_pending,
+        )
 
     def _show_waiting_placeholder_rows(self) -> None:
         refs = self._current_source_question_refs()
-        if not refs:
-            return
         self._waiting_detail_timer.stop()
         self._waiting_elapsed_s = 0
-        self._detail_table.setRowCount(len(refs))
+        self._record_flush_update("set_row_count")
+        self._detail_table.setRowCount(0)
         self._detail_row_map = {}
-        model_count = len(self._content_model_specs)
-        payload_col_offset = 1 + model_count
-        verdict_col = payload_col_offset + model_count
-        for row_index, item in enumerate(refs):
-            display_number = str(item.get("number") or row_index + 1)
-            self._detail_row_map[row_index + 1] = row_index
-            set_content_detail_item(self._detail_table, row_index, 0, display_number)
-            for model_index in range(model_count):
-                set_content_detail_item(self._detail_table, row_index, 1 + model_index, "等待 0s")
-                set_content_detail_item(self._detail_table, row_index, payload_col_offset + model_index, "", is_json=True)
-            set_content_detail_item(self._detail_table, row_index, verdict_col, "等待返回")
-        self._schedule_detail_row_resize()
-        self._waiting_detail_timer.start()
+        if refs:
+            self._detail_text = f"已识别 {len(refs)} 道待解析题目，结果返回后将逐行显示。"
+        else:
+            self._detail_text = "正在等待题目内容解析结果返回。"
+        self._diag("waiting_state_prepared", refs=len(refs))
 
     def _refresh_waiting_placeholder_rows(self) -> None:
         if not self._running:
@@ -738,6 +966,137 @@ class AiImportContentPage(QWizardPage):
                 stopped=self._stopped,
                 finished=self._finished,
             )
+        )
+
+    def _diag(self, event: str, **kwargs: object) -> None:
+        elapsed = time.perf_counter() - self._diag_started_at
+        payload = " ".join(f"{key}={value}" for key, value in kwargs.items())
+        if payload:
+            payload = " | " + payload
+        print(f"[diag][content][+{elapsed:0.3f}s] {event}{payload}", flush=True)
+
+    def _diag_ui_event(self, event: str, **kwargs: object) -> None:
+        count = self._count_ui_diag_event(event)
+        elapsed = time.perf_counter() - self._diag_started_at
+        payload = " ".join(f"{key}={value}" for key, value in kwargs.items())
+        if payload:
+            payload = " | " + payload
+        print(f"[diag][content-ui][+{elapsed:0.3f}s] {event}#{count}{payload}", flush=True)
+
+    def _count_ui_diag_event(self, event: str) -> int:
+        current = int(self._ui_diag_total_counts.get(event, 0)) + 1
+        self._ui_diag_total_counts[event] = current
+        if self._ui_diag_window_active:
+            self._ui_diag_window_counts[event] = int(self._ui_diag_window_counts.get(event, 0)) + 1
+        return current
+
+    def _start_ui_diag_window(self, reason: str) -> None:
+        self._ui_diag_window_reason = reason
+        self._ui_diag_window_counts = {}
+        self._ui_diag_window_active = True
+        if self._ui_diag_summary_timer.isActive():
+            self._ui_diag_summary_timer.stop()
+        self._ui_diag_summary_timer.start()
+        self._diag("ui_diag_window_started", reason=reason, duration_ms=CONTENT_DIAG_WINDOW_MS)
+
+    def _emit_ui_diag_summary(self) -> None:
+        self._ui_diag_window_active = False
+        summary_items = {
+            "reason": self._ui_diag_window_reason or "-",
+            "show": self._ui_diag_window_counts.get("show", 0),
+            "resize": self._ui_diag_window_counts.get("resize", 0),
+            "paint": self._ui_diag_window_counts.get("paint", 0),
+            "progress": self._ui_diag_window_counts.get("progress_count", 0),
+            "compare_queued": self._ui_diag_window_counts.get("compare_payload_queued", 0),
+            "flush_scheduled": self._ui_diag_window_counts.get("ui_flush_scheduled", 0),
+            "flush_applied": self._ui_diag_window_counts.get("ui_flush_applied", 0),
+            "accepted": self._ui_diag_window_counts.get("question_accepted", 0),
+            "pending_compare": len(self._pending_compare_payloads),
+            "rows": self._detail_table.rowCount(),
+            "progress_value": self._progress.value(),
+            "progress_max": self._progress.maximum(),
+        }
+        self._diag("ui_diag_5s_summary", **summary_items)
+        self._diag("control_event_5s_summary", **self._collect_control_event_summary())
+
+    def _install_control_diag_filters(self) -> None:
+        controls = {
+            "table": self._detail_table,
+            "table_viewport": self._detail_table.viewport(),
+            "table_hheader": self._detail_table.horizontalHeader(),
+            "table_hheader_viewport": self._detail_table.horizontalHeader().viewport(),
+            "progress": self._progress,
+            "status_label": self._status_label,
+        }
+        for name, widget in controls.items():
+            if widget is not None:
+                widget.setObjectName(name)
+                widget.installEventFilter(self)
+                self._control_event_counts.setdefault(name, {})
+
+    def eventFilter(self, watched, event: QEvent) -> bool:
+        name = watched.objectName() if watched is not None else ""
+        if name in self._control_event_counts:
+            event_type = event.type()
+            event_name = self._control_event_name(event_type)
+            if event_name:
+                count = self._count_control_event(name, event_name)
+                if event_name in {"show", "hide", "resize"} or (event_name == "paint" and count <= 10):
+                    self._diag(
+                        "control_event",
+                        control=name,
+                        control_event=event_name,
+                        count=count,
+                    )
+        return super().eventFilter(watched, event)
+
+    def _control_event_name(self, event_type: QEvent.Type) -> str:
+        mapping = {
+            QEvent.Type.Show: "show",
+            QEvent.Type.Hide: "hide",
+            QEvent.Type.Resize: "resize",
+            QEvent.Type.Paint: "paint",
+            QEvent.Type.UpdateRequest: "update_request",
+            QEvent.Type.LayoutRequest: "layout_request",
+        }
+        return mapping.get(event_type, "")
+
+    def _count_control_event(self, control: str, event_name: str) -> int:
+        bucket = self._control_event_counts.setdefault(control, {})
+        current = int(bucket.get(event_name, 0)) + 1
+        bucket[event_name] = current
+        return current
+
+    def _collect_control_event_summary(self) -> dict[str, object]:
+        summary: dict[str, object] = {}
+        interesting_controls = (
+            "table",
+            "table_viewport",
+            "table_hheader",
+            "table_hheader_viewport",
+            "progress",
+            "status_label",
+        )
+        interesting_events = ("paint", "resize", "show", "hide", "update_request", "layout_request")
+        for control in interesting_controls:
+            counts = self._control_event_counts.get(control, {})
+            for event_name in interesting_events:
+                key = f"{control}_{event_name}"
+                summary[key] = counts.get(event_name, 0)
+        return summary
+
+    def _reset_flush_update_stats(self) -> None:
+        self._flush_update_stats = {}
+
+    def _record_flush_update(self, name: str, amount: int = 1) -> None:
+        self._flush_update_stats[name] = int(self._flush_update_stats.get(name, 0)) + int(amount)
+
+    def _format_flush_update_stats(self) -> str:
+        if not self._flush_update_stats:
+            return "-"
+        return ",".join(
+            f"{key}:{self._flush_update_stats[key]}"
+            for key in sorted(self._flush_update_stats.keys())
         )
 
     def _force_finish(self) -> None:
@@ -844,6 +1203,7 @@ class AiImportContentPage(QWizardPage):
         if not self._close_after_stop_requested:
             return
         self._close_after_stop_requested = False
+        self._diag("finish_close_after_stop", has_wizard=isinstance(self.wizard(), QWizard))
         wizard = self.wizard()
         if isinstance(wizard, QWizard):
             QTimer.singleShot(0, wizard.close)

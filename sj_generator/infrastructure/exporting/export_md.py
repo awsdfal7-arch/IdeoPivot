@@ -110,11 +110,12 @@ def _format_options_block(options: str, *, convertible_multi_mode: str = "keep_c
     parsed = try_parse_options_json(options)
     if parsed is not None:
         keys = sorted(parsed.keys(), key=_option_key_sort_key)
-        return [f"{k}. {parsed[k]}".rstrip() for k in keys]
+        return [_format_option_entry(k, parsed[k]) for k in keys]
 
     options = _force_newline_before_markers(options)
     lines = _split_lines(options)
     lines = [line for line in lines if line.strip()]
+    lines = [_normalize_option_line(line) for line in lines]
     return _normalize_convertible_multi_option_lines(lines, convertible_multi_mode=convertible_multi_mode)
 
 
@@ -187,6 +188,22 @@ def _option_key_sort_key(key: str) -> tuple[int, str]:
     if len(k) >= 1 and "A" <= k[0] <= "Z":
         return (0, k[0])
     return (1, k)
+
+
+def _format_option_entry(marker: str, content: str) -> str:
+    marker = marker.strip()
+    content = content.rstrip()
+    if _is_circled_marker(marker):
+        return f"{marker} {content}".rstrip()
+    return f"{marker}. {content}".rstrip()
+
+
+def _normalize_option_line(text: str) -> str:
+    return re.sub(r"^(\s*[\u2460-\u2473])[\.\u3001．:：]\s*", r"\1 ", text)
+
+
+def _is_circled_marker(text: str) -> bool:
+    return bool(re.fullmatch(r"[\u2460-\u2473]", text.strip()))
 
 
 def _ensure_choice_blank(stem_lines: list[str]) -> list[str]:

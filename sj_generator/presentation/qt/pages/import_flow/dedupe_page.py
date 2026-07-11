@@ -76,11 +76,18 @@ def _show_message_box(
     return QMessageBox.StandardButton(box.exec())
 
 
+_LEADING_DOT_RE = re.compile(r"^\.\s*")
+
+
+def _strip_leading_dot(text: str) -> str:
+    return _LEADING_DOT_RE.sub("", text.strip())
+
+
 def _format_db_question_options(record: DbQuestionRecord) -> str:
     option_texts = [record.option_1, record.option_2, record.option_3, record.option_4]
     if record.question_type == "可转多选":
         lines = [
-            f"{marker}. {text.strip()}".rstrip()
+            f"{marker}. {_strip_leading_dot(text)}".rstrip()
             for marker, text in zip(["①", "②", "③", "④"], option_texts)
             if text.strip()
         ]
@@ -100,7 +107,7 @@ def _format_db_question_options(record: DbQuestionRecord) -> str:
     else:
         markers = ["A", "B", "C", "D"]
     return "\n".join(
-        f"{marker}. {text.strip()}".rstrip()
+        f"{marker}. {_strip_leading_dot(text)}".rstrip()
         for marker, text in zip(markers, option_texts)
         if text.strip()
     )

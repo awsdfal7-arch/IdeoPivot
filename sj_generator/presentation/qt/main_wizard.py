@@ -1,4 +1,5 @@
 import sys
+import time
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon
@@ -30,6 +31,13 @@ from sj_generator.presentation.qt.pages.intro_page import IntroPage
 from sj_generator.presentation.qt.pages.welcome_page import WelcomePage
 from sj_generator.presentation.qt.wizard_base import AppWizardBase
 from sj_generator.shared.paths import app_paths
+
+
+def _diag(event: str, **kwargs: object) -> None:
+    payload = " ".join(f"{key}={value}" for key, value in kwargs.items())
+    if payload:
+        payload = " | " + payload
+    print(f"[diag][app][{time.strftime('%H:%M:%S')}] {event}{payload}", flush=True)
 
 
 class GeneratorWizard(AppWizardBase):
@@ -131,8 +139,27 @@ class GeneratorWizard(AppWizardBase):
 
 
 def main() -> None:
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    _diag(
+        "qt_attributes_set",
+        use_software_opengl=True,
+        share_opengl_contexts=True,
+    )
     app = QApplication(sys.argv)
+    screen = app.primaryScreen()
+    screen_size = "-"
+    dpr = "-"
+    if screen is not None:
+        screen_size = f"{screen.size().width()}x{screen.size().height()}"
+        dpr = f"{screen.devicePixelRatio():.2f}"
+    _diag(
+        "app_created",
+        platform=app.platformName(),
+        screen=screen_size,
+        dpr=dpr,
+        argv=" ".join(sys.argv),
+    )
     app.setStyleSheet(APP_STYLESHEET)
     icon_path = app_paths().logo_path
     icon: QIcon | None = None
@@ -146,4 +173,5 @@ def main() -> None:
         wizard.setWindowIcon(icon)
     wizard.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
     wizard.show()
+    _diag("wizard_shown", width=DEFAULT_WINDOW_WIDTH, height=DEFAULT_WINDOW_HEIGHT)
     raise SystemExit(app.exec())

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QWizard
 
@@ -20,6 +22,13 @@ from sj_generator.presentation.qt.wizard_base import AppWizardBase
 
 BUTTON_MIN_WIDTH = 128
 BUTTON_MIN_HEIGHT = 40
+
+
+def _diag(event: str, **kwargs: object) -> None:
+    payload = " ".join(f"{key}={value}" for key, value in kwargs.items())
+    if payload:
+        payload = " | " + payload
+    print(f"[diag][import-wizard][{time.strftime('%H:%M:%S')}] {event}{payload}", flush=True)
 
 
 def configure_import_flow_pages(wizard: QWizard, state: ImportWizardSession) -> None:
@@ -118,19 +127,25 @@ class ImportFlowWizard(AppWizardBase):
         super().accept()
 
     def reject(self) -> None:
+        _diag("reject_called", current_id=self.currentId(), current_page=type(self.currentPage()).__name__)
         if not self._can_close_current_page():
             self._deferred_close_requested = True
+            _diag("reject_deferred", current_id=self.currentId())
             self.hide()
             return
+        _diag("reject_allowed", current_id=self.currentId())
         super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        _diag("close_event", current_id=self.currentId(), current_page=type(self.currentPage()).__name__)
         if not self._can_close_current_page():
             self._deferred_close_requested = True
+            _diag("close_deferred", current_id=self.currentId())
             self.hide()
             event.ignore()
             return
         self._deferred_close_requested = False
+        _diag("close_allowed", current_id=self.currentId())
         super().closeEvent(event)
 
     def _can_close_current_page(self) -> bool:
@@ -145,8 +160,11 @@ class ImportFlowWizard(AppWizardBase):
         for page_id in page_ids:
             page = self.page(page_id)
             guard = getattr(page, "prepare_to_close", None)
-            if callable(guard) and not bool(guard()):
-                return False
+            if callable(guard):
+                allowed = bool(guard())
+                _diag("page_close_guard", page_id=page_id, page=type(page).__name__, allowed=allowed)
+                if not allowed:
+                    return False
         return True
 
     def open_additional_documents(self, source_paths, *, message_parent=None) -> bool:
